@@ -280,6 +280,22 @@ final class GitHubAPI {
         return try Self.decoder.decode(GHIssue.self, from: raw.data)
     }
 
+    func updateComment(_ repo: String, commentID: Int, body: String) async throws -> GHComment {
+        let raw = try await send("PATCH", "repos/\(repo)/issues/comments/\(commentID)",
+                                 body: ["body": body], accept: Self.acceptFull)
+        return try Self.decoder.decode(GHComment.self, from: raw.data)
+    }
+
+    func updateIssueBody(_ repo: String, _ number: Int, body: String) async throws -> GHIssue {
+        let raw = try await send("PATCH", "repos/\(repo)/issues/\(number)",
+                                 body: ["body": body], accept: Self.acceptFull)
+        return try Self.decoder.decode(GHIssue.self, from: raw.data)
+    }
+
+    func deleteComment(_ repo: String, commentID: Int) async throws {
+        _ = try await send("DELETE", "repos/\(repo)/issues/comments/\(commentID)")
+    }
+
     func setIssueState(_ repo: String, _ number: Int, closed: Bool) async throws -> GHIssue {
         let raw = try await send("PATCH", "repos/\(repo)/issues/\(number)",
                                  body: ["state": closed ? "closed" : "open"])

@@ -214,16 +214,48 @@ struct MessageBubbleRow: View {
     let chatID: String
     let message: Message
     let showHeader: Bool
+    @State private var showDeleteConfirm = false
 
     private var isMine: Bool { message.author.login == app.me?.login }
+
+    private var isEditingThis: Bool {
+        app.editingMessage == AppState.EditingTarget(chatID: chatID, messageID: message.id)
+    }
+
+    /// Same actions as the bubble's context menu, merged into the selectable
+    /// text's own (system) menu so right-clicking the words works too.
+    private var menuActions: MessageMenuActions {
+        let editable = isMine && !message.pending && !message.failed
+        var actions = MessageMenuActions()
+        if editable {
+            let msg = message
+            actions.onEdit = { app.beginEdit(chatID: chatID, message: msg) }
+            if message.commentID != nil {
+                actions.onDelete = { showDeleteConfirm = true }
+            }
+        }
+        let body = message.body
+        actions.onCopyAll = {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(body, forType: .string)
+        }
+        if let urlString = message.htmlURL, let url = URL(string: urlString) {
+            actions.onOpenGitHub = { NSWorkspace.shared.open(url) }
+        }
+        return actions
+    }
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
             if isMine {
                 Spacer(minLength: 90)
                 VStack(alignment: .trailing, spacing: 2) {
-                    bubble(alignRight: true)
-                    if message.failed { failedRow }
+                    if isEditingThis {
+                        MessageEditView()
+                    } else {
+                        bubble(alignRight: true)
+                        if message.failed { failedRow }
+                    }
                 }
                 if showHeader {
                     AvatarView(user: message.author, size: 28)
@@ -256,11 +288,19 @@ struct MessageBubbleRow: View {
 
     private func bubble(alignRight: Bool) -> some View {
         BubbleContent(message: message, isMine: isMine,
-                      highlighted: app.highlightedMessageID == message.id)
+                      highlighted: app.highlightedMessageID == message.id,
+                      actions: menuActions)
             .animation(.easeInOut(duration: 0.3), value: app.highlightedMessageID)
             .frame(maxWidth: .infinity, alignment: alignRight ? .trailing : .leading)
             .help(Formatters.full.string(from: message.createdAt))
             .contextMenu {
+                if isMine, !message.pending, !message.failed {
+                    Button("Edit Message") { app.beginEdit(chatID: chatID, message: message) }
+                    if message.commentID != nil {
+                        Button("Delete Message…", role: .destructive) { showDeleteConfirm = true }
+                    }
+                    Divider()
+                }
                 Button("Copy Text") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(message.body, forType: .string)
@@ -268,6 +308,13 @@ struct MessageBubbleRow: View {
                 if let urlString = message.htmlURL, let url = URL(string: urlString) {
                     Button("Open on GitHub") { NSWorkspace.shared.open(url) }
                 }
+            }
+            .confirmationDialog("Delete this message?", isPresented: $showDeleteConfirm) {
+                Button("Delete", role: .destructive) {
+                    app.deleteMessage(chatID: chatID, messageID: message.id)
+                }
+            } message: {
+                Text("This removes the comment from GitHub for everyone. There's no undo.")
             }
     }
 
@@ -283,10 +330,51 @@ struct MessageBubbleRow: View {
     }
 }
 
+/// In-place editor swapped in for one of your bubbles (Return saves, Esc cancels).
+struct MessageEditView: View {
+    @EnvironmentObject var app: AppState
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            TextField("Edit message", text: $app.editDraft, axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .lineLimit(1...14)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .frame(minWidth: 300, maxWidth: 480, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 17, style: .continuous)
+                    .fill(Color.primary.opacity(0.06)))
+                .overlay(RoundedRectangle(cornerRadius: 17, style: .continuous)
+                    .stroke(Color.accentColor.opacity(0.65), lineWidth: 1.5))
+                .focused($focused)
+                .onSubmit { Task { await app.commitEdit() } }
+            HStack(spacing: 8) {
+                Text("⌥↩ for a new line")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                if app.editSaving {
+                    ProgressView().controlSize(.small)
+                }
+                Button("Cancel") { app.cancelEdit() }
+                    .keyboardShortcut(.cancelAction)
+                    .controlSize(.small)
+                Button("Save") { Task { await app.commitEdit() } }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(app.editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || app.editSaving)
+            }
+        }
+        .onAppear { focused = true }
+    }
+}
+
 struct BubbleContent: View {
     let message: Message
     let isMine: Bool
     var highlighted: Bool = false
+    var actions: MessageMenuActions? = nil
 
     var body: some View {
         let text = SyncEngine.displayBody(message.body)
@@ -295,7 +383,7 @@ struct BubbleContent: View {
                 AttachmentThumb(attachment: attachment)
             }
             if !text.isEmpty {
-                MessageTextView(text: text, isMine: isMine)
+                MessageTextView(text: text, isMine: isMine, actions: actions)
             } else if message.attachments.isEmpty {
                 Text("(no description)")
                     .font(.system(size: 13))

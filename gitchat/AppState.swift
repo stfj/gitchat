@@ -52,7 +52,15 @@ final class AppState: ObservableObject {
     @Published var highlightedMessageID: String?
     @Published var webLoginVisible = false
     @Published var webSessionActive = false
+    @Published var editingMessage: EditingTarget?
+    @Published var editDraft = ""
+    @Published var editSaving = false
     @Published var transcriptLoading: Set<String> = []
+
+    struct EditingTarget: Equatable {
+        var chatID: String
+        var messageID: String
+    }
     @Published var drafts: [String: String] = [:]
 
     var onUnreadChanged: ((Int) -> Void)?
@@ -65,6 +73,10 @@ final class AppState: ObservableObject {
     private var syncLoopTask: Task<Void, Never>?
     private var cycleRunning = false
     private(set) var windowIsKey = false
+    // GitHub's list API lags writes; these keep refreshes from briefly
+    // resurrecting deleted comments or reverting fresh edits.
+    private var recentlyDeleted: [String: Date] = [:]
+    private var recentEdits: [String: (message: Message, at: Date)] = [:]
 
     // MARK: - Lifecycle
 
@@ -405,7 +417,31 @@ final class AppState: ObservableObject {
         if !quiet { transcriptLoading.insert(chatID) }
         defer { transcriptLoading.remove(chatID) }
         do {
-            let messages = try await engine.fetchTranscript(chat: chat)
+            var messages = try await engine.fetchTranscript(chat: chat)
+            // GitHub's comment list lags just-posted comments; a blind replace
+            // here made fresh sends vanish until the API caught up. Keep local
+            // messages the server doesn't know about yet, drop ones we just
+            // deleted, and prefer fresh local edits over stale server copies.
+            let now = Date()
+            recentlyDeleted = recentlyDeleted.filter { now.timeIntervalSince($0.value) < 300 }
+            recentEdits = recentEdits.filter { now.timeIntervalSince($0.value.at) < 300 }
+            messages.removeAll { recentlyDeleted[$0.id] != nil }
+            messages = messages.map { m in
+                if let edit = recentEdits[m.id], (m.updatedAt ?? .distantPast) < edit.at {
+                    return edit.message
+                }
+                return m
+            }
+            if let current = transcripts[chatID] {
+                let known = Set(messages.map(\.id))
+                let recentCutoff = now.addingTimeInterval(-300)
+                for m in current where !known.contains(m.id) {
+                    if m.pending || m.failed || (m.commentID != nil && m.createdAt > recentCutoff) {
+                        messages.append(m)
+                    }
+                }
+                messages.sort { $0.createdAt < $1.createdAt }
+            }
             if !quiet || transcripts[chatID] != nil {
                 transcripts[chatID] = messages
             }
@@ -500,6 +536,88 @@ final class AppState: ObservableObject {
         list[i].pending = false
         list[i].failed = true
         transcripts[chatID] = list
+    }
+
+    // MARK: - Editing own messages
+
+    func beginEdit(chatID: String, message: Message) {
+        guard message.author.login == me?.login, !message.pending, !message.failed else { return }
+        editDraft = message.body
+        editingMessage = EditingTarget(chatID: chatID, messageID: message.id)
+    }
+
+    func cancelEdit() {
+        editingMessage = nil
+        editDraft = ""
+    }
+
+    func commitEdit() async {
+        guard let target = editingMessage, let api, let engine,
+              let chat = chats[target.chatID] else { return }
+        let newBody = editDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newBody.isEmpty else { return }
+        editSaving = true
+        defer { editSaving = false }
+        do {
+            let updated: Message
+            if target.messageID == "body" {
+                let issue = try await api.updateIssueBody(chat.repoFullName, chat.number, body: newBody)
+                updated = engine.message(fromIssue: issue)
+                mutateChat(target.chatID) { $0.updatedAt = max($0.updatedAt, issue.updatedAt) }
+            } else if let existing = transcripts[target.chatID]?.first(where: { $0.id == target.messageID }),
+                      let commentID = existing.commentID {
+                let comment = try await api.updateComment(chat.repoFullName, commentID: commentID, body: newBody)
+                updated = engine.message(fromComment: comment)
+            } else {
+                cancelEdit()
+                return
+            }
+            recentEdits[updated.id] = (message: updated, at: Date())
+            if var list = transcripts[target.chatID],
+               let i = list.firstIndex(where: { $0.id == target.messageID }) {
+                list[i] = updated
+                transcripts[target.chatID] = list
+                store.saveTranscript(chat, list)
+                if list.last?.id == updated.id {
+                    mutateChat(target.chatID) {
+                        $0.lastMessageSnippet = plainSnippet(updated.body)
+                        $0.lastMessageAuthor = updated.author
+                    }
+                }
+            }
+            cancelEdit()
+        } catch {
+            lastErrorText = "Couldn't save the edit: \(error.localizedDescription)"
+        }
+    }
+
+    /// Delete one of my comments (the issue body itself can't be deleted).
+    func deleteMessage(chatID: String, messageID: String) {
+        guard let api, let chat = chats[chatID],
+              let message = transcripts[chatID]?.first(where: { $0.id == messageID }),
+              message.author.login == me?.login,
+              let commentID = message.commentID else { return }
+        Task {
+            do {
+                try await api.deleteComment(chat.repoFullName, commentID: commentID)
+                self.recentlyDeleted[messageID] = Date()
+                if var list = self.transcripts[chatID] {
+                    list.removeAll { $0.id == messageID }
+                    self.transcripts[chatID] = list
+                    self.store.saveTranscript(chat, list)
+                    self.mutateChat(chatID) {
+                        $0.commentCount = max(0, $0.commentCount - 1)
+                        if let last = list.last {
+                            $0.lastMessageAt = last.createdAt
+                            $0.lastMessageSnippet = plainSnippet(last.body.isEmpty ? $0.title : last.body)
+                            $0.lastMessageAuthor = last.author
+                        }
+                    }
+                }
+            } catch {
+                self.lastErrorText = "Couldn't delete the message: \(error.localizedDescription)"
+            }
+        }
     }
 
     func retryMessage(chatID: String, messageID: String) {

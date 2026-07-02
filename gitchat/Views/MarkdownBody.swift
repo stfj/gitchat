@@ -8,11 +8,20 @@ import AppKit
 
 /// Link/mention color for incoming (gray) bubbles. The system accent blue is
 /// only ~3.5:1 against the bubble gray; these hold ≥5:1 in both appearances.
-let bubbleLinkColor = Color(nsColor: NSColor(name: nil) { appearance in
+let bubbleLinkNSColor = NSColor(name: nil) { appearance in
     appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
         ? NSColor(calibratedRed: 0.42, green: 0.72, blue: 1.0, alpha: 1)    // #6BB8FF on dark gray
         : NSColor(calibratedRed: 0.02, green: 0.31, blue: 0.68, alpha: 1)   // #0550AE on light gray
-})
+}
+let bubbleLinkColor = Color(nsColor: bubbleLinkNSColor)
+
+/// Message actions merged into the top of the text-selection context menu.
+struct MessageMenuActions {
+    var onEdit: (() -> Void)?
+    var onDelete: (() -> Void)?
+    var onCopyAll: (() -> Void)?
+    var onOpenGitHub: (() -> Void)?
+}
 
 enum MarkdownBlock {
     case paragraph(String)
@@ -149,6 +158,59 @@ enum MarkdownParser {
         return blocks
     }
 
+    // MARK: NSAttributedString variants (for the selectable NSTextView path)
+
+    @MainActor private static let nsInlineCache = NSCache<NSString, NSAttributedString>()
+
+    /// AttributedString presentation intents don't render outside SwiftUI's
+    /// Text, so resolve them into concrete AppKit attributes.
+    @MainActor static func nsInline(_ s: String, isMine: Bool) -> NSAttributedString {
+        let key = (isMine ? "m|" : "o|") + s
+        if let hit = nsInlineCache.object(forKey: key as NSString) { return hit }
+        let source = inline(s, isMine: isMine)
+        let baseColor = isMine ? NSColor.white : NSColor.labelColor
+        let baseSize: CGFloat = 13
+        let out = NSMutableAttributedString()
+        for run in source.runs {
+            let text = String(source.characters[run.range])
+            var font = NSFont.systemFont(ofSize: baseSize)
+            var color = baseColor
+            var attrs: [NSAttributedString.Key: Any] = [:]
+            if let intent = run.inlinePresentationIntent {
+                if intent.contains(.code) {
+                    font = NSFont.monospacedSystemFont(ofSize: baseSize - 1, weight: .regular)
+                }
+                var traits: NSFontDescriptor.SymbolicTraits = []
+                if intent.contains(.stronglyEmphasized) { traits.insert(.bold) }
+                if intent.contains(.emphasized) { traits.insert(.italic) }
+                if !traits.isEmpty {
+                    let descriptor = font.fontDescriptor.withSymbolicTraits(traits)
+                    font = NSFont(descriptor: descriptor, size: font.pointSize) ?? font
+                }
+                if intent.contains(.strikethrough) {
+                    attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+                }
+            }
+            if let link = run.link {
+                attrs[.link] = link
+                color = isMine ? .white : bubbleLinkNSColor
+                attrs[.underlineStyle] = 0
+            }
+            attrs[.font] = font
+            attrs[.foregroundColor] = color
+            out.append(NSAttributedString(string: text, attributes: attrs))
+        }
+        nsInlineCache.setObject(out, forKey: key as NSString)
+        return out
+    }
+
+    @MainActor static func nsCode(_ s: String, isMine: Bool) -> NSAttributedString {
+        NSAttributedString(string: s, attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular),
+            .foregroundColor: isMine ? NSColor.white : NSColor.labelColor,
+        ])
+    }
+
     /// Inline markdown + @mention highlighting. Mentions become semibold links
     /// to the user's GitHub profile.
     @MainActor static func inline(_ s: String, isMine: Bool) -> AttributedString {
@@ -185,11 +247,90 @@ enum MarkdownParser {
     }
 }
 
+// MARK: - Selectable text with message actions in its context menu
+
+/// Read-only NSTextView so selection gets the full system menu (Look Up,
+/// Translate, …) with the message actions merged in at the top.
+final class MessageTextNSView: NSTextView {
+    var actions: MessageMenuActions?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event) ?? NSMenu()
+        var index = 0
+        func insert(_ title: String, _ selector: Selector) {
+            let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+            item.target = self
+            menu.insertItem(item, at: index)
+            index += 1
+        }
+        if actions?.onEdit != nil { insert("Edit Message", #selector(editAction)) }
+        if actions?.onDelete != nil { insert("Delete Message…", #selector(deleteAction)) }
+        if actions?.onCopyAll != nil { insert("Copy Message Text", #selector(copyAllAction)) }
+        if actions?.onOpenGitHub != nil { insert("Open on GitHub", #selector(openGitHubAction)) }
+        if index > 0 { menu.insertItem(.separator(), at: index) }
+        return menu
+    }
+
+    @objc private func editAction() { actions?.onEdit?() }
+    @objc private func deleteAction() { actions?.onDelete?() }
+    @objc private func copyAllAction() { actions?.onCopyAll?() }
+    @objc private func openGitHubAction() { actions?.onOpenGitHub?() }
+}
+
+struct SelectableMessageText: NSViewRepresentable {
+    let attributed: NSAttributedString
+    var actions: MessageMenuActions?
+
+    func makeNSView(context: Context) -> MessageTextNSView {
+        // Explicit TextKit 1 stack: TK2's measurement doesn't hug single lines,
+        // which made short bubbles stretch to the full proposed width.
+        let storage = NSTextStorage()
+        let layoutManager = NSLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: 0.0, height: CGFloat.greatestFiniteMagnitude))
+        container.widthTracksTextView = true
+        container.lineFragmentPadding = 0
+        storage.addLayoutManager(layoutManager)
+        layoutManager.addTextContainer(container)
+
+        let view = MessageTextNSView(frame: NSRect.zero, textContainer: container)
+        view.isEditable = false
+        view.isSelectable = true
+        view.isRichText = true
+        view.drawsBackground = false
+        view.textContainerInset = NSSize.zero
+        view.isVerticallyResizable = false
+        view.isHorizontallyResizable = false
+        // Per-run colors handle link styling; keep only the pointer cursor.
+        view.linkTextAttributes = [NSAttributedString.Key.cursor: NSCursor.pointingHand]
+        return view
+    }
+
+    func updateNSView(_ view: MessageTextNSView, context: Context) {
+        if view.textStorage?.isEqual(to: attributed) != true {
+            view.textStorage?.setAttributedString(attributed)
+        }
+        view.actions = actions
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView view: MessageTextNSView, context: Context) -> CGSize? {
+        var width = proposal.width ?? 456
+        if !width.isFinite || width < 20 { width = 456 }
+        // Measure the string directly — container-free and reliably tight.
+        let bounds = attributed.boundingRect(
+            with: NSSize(width: width, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        )
+        return CGSize(width: min(width, max(bounds.width.rounded(.up) + 1, 2)),
+                      height: max(bounds.height.rounded(.up), 2))
+    }
+}
+
 // MARK: - Bubble body view
 
 struct MessageTextView: View {
     let text: String
     let isMine: Bool
+    var actions: MessageMenuActions? = nil
 
     private var base: Color { isMine ? .white : .primary }
     private var secondaryTone: Color { isMine ? .white.opacity(0.82) : Color.secondary }
@@ -217,13 +358,12 @@ struct MessageTextView: View {
     @ViewBuilder private func blockView(_ block: MarkdownBlock) -> some View {
         switch block {
         case .paragraph(let s):
-            inlineText(s)
+            SelectableMessageText(attributed: MarkdownParser.nsInline(s, isMine: isMine), actions: actions)
 
         case .heading(let level, let s):
             Text(MarkdownParser.inline(s, isMine: isMine))
                 .font(.system(size: headingSize(level), weight: level <= 2 ? .bold : .semibold))
                 .foregroundStyle(base)
-                .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 2)
 
@@ -270,10 +410,7 @@ struct MessageTextView: View {
             .fixedSize(horizontal: false, vertical: true)
 
         case .code(let s):
-            Text(s)
-                .font(.system(size: 11.5, design: .monospaced))
-                .textSelection(.enabled)
-                .foregroundStyle(base)
+            SelectableMessageText(attributed: MarkdownParser.nsCode(s, isMine: isMine), actions: actions)
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 8)
@@ -283,7 +420,6 @@ struct MessageTextView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(s)
                     .font(.system(size: 11, design: .monospaced))
-                    .textSelection(.enabled)
                     .foregroundStyle(base)
                     .padding(8)
             }
@@ -303,7 +439,6 @@ struct MessageTextView: View {
         Text(MarkdownParser.inline(s, isMine: isMine))
             .font(.system(size: 13))
             .foregroundStyle(color ?? base)
-            .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
     }
 }
