@@ -157,13 +157,16 @@ struct TranscriptView: View {
     @EnvironmentObject var app: AppState
     let chatID: String
 
+    @State private var scrolledID: String?
+
     var body: some View {
         let messages = app.transcripts[chatID] ?? []
         let stillLoading = app.transcriptLoading.contains(chatID) && messages.isEmpty
 
         // No ScrollViewReader/scrollTo here: on macOS the scroll command
         // bubbles past the transcript and pans the whole window's content.
-        // defaultScrollAnchor keeps the log pinned to the newest message.
+        // defaultScrollAnchor keeps the log pinned to the newest message, and
+        // the declarative scrollPosition binding handles jump-to-message.
         ScrollView {
             VStack(alignment: .leading, spacing: 2) {
                 if stillLoading {
@@ -183,11 +186,24 @@ struct TranscriptView: View {
                     }
                 }
             }
+            .scrollTargetLayout()
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .defaultScrollAnchor(.bottom)
+        .scrollPosition(id: $scrolledID, anchor: .center)
+        .onAppear { applyJump(app.jumpTarget) }
+        .onChange(of: app.jumpTarget) { _, target in applyJump(target) }
+    }
+
+    private func applyJump(_ target: MessageJump?) {
+        guard let target, target.chatID == chatID else { return }
+        scrolledID = target.messageID
+        if ProcessInfo.processInfo.environment["GITCHAT_DEBUG_GEO"] != nil {
+            gclog("jump applied: chat=\(target.chatID) message=\(target.messageID)")
+        }
+        Task { @MainActor in app.jumpTarget = nil }
     }
 }
 
@@ -233,7 +249,9 @@ struct MessageBubbleRow: View {
     }
 
     private func bubble(alignRight: Bool) -> some View {
-        BubbleContent(message: message, isMine: isMine)
+        BubbleContent(message: message, isMine: isMine,
+                      highlighted: app.highlightedMessageID == message.id)
+            .animation(.easeInOut(duration: 0.3), value: app.highlightedMessageID)
             .frame(maxWidth: .infinity, alignment: alignRight ? .trailing : .leading)
             .help(Formatters.full.string(from: message.createdAt))
             .contextMenu {
@@ -262,6 +280,7 @@ struct MessageBubbleRow: View {
 struct BubbleContent: View {
     let message: Message
     let isMine: Bool
+    var highlighted: Bool = false
 
     var body: some View {
         let text = SyncEngine.displayBody(message.body)
@@ -284,6 +303,12 @@ struct BubbleContent: View {
             RoundedRectangle(cornerRadius: 17, style: .continuous)
                 .fill(isMine ? AnyShapeStyle(bubbleBlue) : AnyShapeStyle(bubbleGray))
         )
+        .overlay {
+            if highlighted {
+                RoundedRectangle(cornerRadius: 17, style: .continuous)
+                    .stroke(Color.accentColor, lineWidth: 2.5)
+            }
+        }
         .tint(isMine ? Color.white : bubbleLinkColor)   // links: readable on both bubble grays
         .frame(maxWidth: 480, alignment: .leading)
     }

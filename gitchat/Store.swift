@@ -31,8 +31,8 @@ final class Store {
         return d
     }()
 
-    /// chatID → searchable text (title, repo, participants, message bodies).
-    private(set) var searchBlobs: [String: String] = [:]
+    /// chatID → per-message search entries (full text of the conversation).
+    private(set) var messageIndex: [String: [IndexedMessage]] = [:]
 
     init() {
         try? FileManager.default.createDirectory(at: Self.transcriptsDir, withIntermediateDirectories: true)
@@ -51,8 +51,8 @@ final class Store {
               file.version == Self.schemaVersion else { return [:] }
         var out: [String: Chat] = [:]
         for c in file.chats { out[c.id] = c }
-        for c in file.chats where searchBlobs[c.id] == nil {
-            searchBlobs[c.id] = baseBlob(for: c)
+        for c in file.chats where messageIndex[c.id] == nil {
+            messageIndex[c.id] = fallbackEntries(for: c)
         }
         return out
     }
@@ -118,44 +118,57 @@ final class Store {
         if let data = try? Self.enc.encode(messages) {
             try? data.write(to: Self.transcriptURL(fileKey: chat.fileKey), options: [.atomic])
         }
-        searchBlobs[chat.id] = transcriptBlob(for: chat, messages: messages)
+        messageIndex[chat.id] = Self.entries(from: messages)
     }
 
     // MARK: search index
 
-    private func baseBlob(for chat: Chat) -> String {
-        [chat.title, chat.repoFullName, "#\(chat.number)", chat.author.login, chat.lastMessageSnippet]
-            .joined(separator: "\n")
+    nonisolated private static func entries(from messages: [Message]) -> [IndexedMessage] {
+        messages.map {
+            IndexedMessage(id: $0.id, author: $0.author, text: $0.body, createdAt: $0.createdAt)
+        }
     }
 
-    private func transcriptBlob(for chat: Chat, messages: [Message]) -> String {
-        var parts = [chat.title, chat.repoFullName, "#\(chat.number)"]
-        parts += messages.map { "\($0.author.login): \($0.body)" }
-        return parts.joined(separator: "\n")
+    /// Until the full transcript lands, the last-message snippet stands in so
+    /// the chat is still findable. Jumps to it just open the chat normally.
+    private func fallbackEntries(for chat: Chat) -> [IndexedMessage] {
+        guard !chat.lastMessageSnippet.isEmpty else { return [] }
+        return [IndexedMessage(id: "fallback",
+                               author: chat.lastMessageAuthor ?? chat.author,
+                               text: chat.lastMessageSnippet,
+                               createdAt: chat.lastMessageAt)]
     }
 
     func indexChat(_ chat: Chat, body: String?) {
-        var blob = baseBlob(for: chat)
-        if let body, !body.isEmpty { blob += "\n" + chat.author.login + ": " + body }
-        searchBlobs[chat.id] = blob
+        var entries: [IndexedMessage] = []
+        if let body, !body.isEmpty {
+            entries.append(IndexedMessage(id: "body", author: chat.author, text: body, createdAt: chat.createdAt))
+        }
+        // The snippet duplicates the body for comment-less chats; only add it
+        // when it points at a different (newer) message.
+        if chat.commentCount > 0 || entries.isEmpty {
+            entries.append(contentsOf: fallbackEntries(for: chat))
+        }
+        messageIndex[chat.id] = entries
     }
 
     func appendIndex(chatID: String, messages: [Message]) {
         guard !messages.isEmpty else { return }
-        var blob = searchBlobs[chatID] ?? ""
-        blob += "\n" + messages.map { "\($0.author.login): \($0.body)" }.joined(separator: "\n")
-        searchBlobs[chatID] = blob
+        var list = messageIndex[chatID] ?? []
+        let known = Set(list.map(\.id))
+        list += Self.entries(from: messages.filter { !known.contains($0.id) })
+        messageIndex[chatID] = list
     }
 
     /// Fold every on-disk transcript into the search index (runs shortly after launch).
     func buildSearchIndex(chats: [String: Chat]) async {
-        let items = chats.values.map { (id: $0.id, fileKey: $0.fileKey, chat: $0) }
+        let items = chats.values.map { (id: $0.id, fileKey: $0.fileKey) }
         for item in items {
             let messages = await Task.detached(priority: .utility) {
                 Store.readTranscript(fileKey: item.fileKey)
             }.value
             if let messages {
-                searchBlobs[item.id] = transcriptBlob(for: item.chat, messages: messages)
+                messageIndex[item.id] = Self.entries(from: messages)
             }
         }
     }
@@ -163,6 +176,6 @@ final class Store {
     func wipe() {
         try? FileManager.default.removeItem(at: Self.baseDir)
         try? FileManager.default.createDirectory(at: Self.transcriptsDir, withIntermediateDirectories: true)
-        searchBlobs = [:]
+        messageIndex = [:]
     }
 }

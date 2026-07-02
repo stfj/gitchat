@@ -10,7 +10,6 @@ enum AppPhase {
 
 struct ChatRowModel: Identifiable {
     var chat: Chat
-    var matchSnippet: String?
     var id: String { chat.id }
 }
 
@@ -49,6 +48,8 @@ final class AppState: ObservableObject {
     @Published var lastErrorText: String?
     @Published var composeVisible = false
     @Published var previewImageURL: String?
+    @Published var jumpTarget: MessageJump?
+    @Published var highlightedMessageID: String?
     @Published var transcriptLoading: Set<String> = []
     @Published var drafts: [String: String] = [:]
 
@@ -117,6 +118,13 @@ final class AppState: ObservableObject {
                 if let longest = self.chats.values.max(by: { $0.title.count < $1.title.count }) {
                     gclog("debug auto-select longest title (\(longest.title.count) chars): \(longest.id)")
                     self.selectedChatID = longest.id
+                }
+                try? await Task.sleep(for: .seconds(3))
+                let results = self.searchResults("the")
+                gclog("debug search 'the': \(results.chats.count) chat hit(s), \(results.messages.count) message hit(s)")
+                if let hit = results.messages.first(where: { $0.messageID != "body" && $0.messageID != "fallback" }) {
+                    gclog("debug opening hit: \(hit.chatID) message \(hit.messageID)")
+                    self.open(hit: hit)
                 }
             }
         }
@@ -669,44 +677,79 @@ final class AppState: ObservableObject {
     }
 
     func rows() -> [ChatRowModel] {
-        let q = searchText.trimmingCharacters(in: .whitespaces)
-        if q.isEmpty {
-            var list: [Chat]
-            switch filter {
-            case .all:
-                list = chats.values.filter { !$0.ignored && !$0.pinned }
-                // Closed issues hide once read and deselected (filter-menu toggle).
-                if !settings.showClosed {
-                    list = list.filter { $0.isOpen || $0.unreadCount > 0 || $0.id == selectedChatID }
-                }
-            case .unread:
-                list = chats.values.filter { !$0.ignored && $0.unreadCount > 0 }
-            case .ignored:
-                list = chats.values.filter { $0.ignored }
+        var list: [Chat]
+        switch filter {
+        case .all:
+            list = chats.values.filter { !$0.ignored && !$0.pinned }
+            // Closed issues hide once read and deselected (filter-menu toggle).
+            if !settings.showClosed {
+                list = list.filter { $0.isOpen || $0.unreadCount > 0 || $0.id == selectedChatID }
             }
-            return list
-                .sorted { $0.lastMessageAt > $1.lastMessageAt }
-                .map { ChatRowModel(chat: $0, matchSnippet: nil) }
+        case .unread:
+            list = chats.values.filter { !$0.ignored && $0.unreadCount > 0 }
+        case .ignored:
+            list = chats.values.filter { $0.ignored }
         }
+        return list
+            .sorted { $0.lastMessageAt > $1.lastMessageAt }
+            .map { ChatRowModel(chat: $0) }
+    }
 
-        var out: [ChatRowModel] = []
+    // MARK: - Search
+
+    /// Full search: chats whose title/repo/author match, plus every individual
+    /// message whose text contains the query.
+    func searchResults(_ query: String) -> (chats: [ChatRowModel], messages: [MessageHit]) {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return ([], []) }
+
+        var chatHits: [ChatRowModel] = []
         for chat in chats.values {
             if chat.title.range(of: q, options: .caseInsensitive) != nil
                 || chat.repoFullName.range(of: q, options: .caseInsensitive) != nil
                 || chat.author.login.range(of: q, options: .caseInsensitive) != nil
                 || "#\(chat.number)" == q {
-                out.append(ChatRowModel(chat: chat, matchSnippet: nil))
-                continue
-            }
-            if let blob = store.searchBlobs[chat.id],
-               let r = blob.range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) {
-                let start = blob.index(r.lowerBound, offsetBy: -32, limitedBy: blob.startIndex) ?? blob.startIndex
-                let end = blob.index(r.upperBound, offsetBy: 64, limitedBy: blob.endIndex) ?? blob.endIndex
-                var snip = String(blob[start..<end]).replacingOccurrences(of: "\n", with: "  ")
-                snip = snip.trimmingCharacters(in: .whitespacesAndNewlines)
-                out.append(ChatRowModel(chat: chat, matchSnippet: (start > blob.startIndex ? "…" : "") + snip))
+                chatHits.append(ChatRowModel(chat: chat))
             }
         }
-        return out.sorted { $0.chat.lastMessageAt > $1.chat.lastMessageAt }
+        chatHits.sort { $0.chat.lastMessageAt > $1.chat.lastMessageAt }
+
+        var hits: [MessageHit] = []
+        outer: for (chatID, entries) in store.messageIndex {
+            guard let chat = chats[chatID] else { continue }
+            for entry in entries {
+                guard let r = entry.text.range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) else { continue }
+                let start = entry.text.index(r.lowerBound, offsetBy: -30, limitedBy: entry.text.startIndex) ?? entry.text.startIndex
+                let end = entry.text.index(r.upperBound, offsetBy: 90, limitedBy: entry.text.endIndex) ?? entry.text.endIndex
+                var snippet = String(entry.text[start..<end])
+                    .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if start > entry.text.startIndex { snippet = "…" + snippet }
+                hits.append(MessageHit(
+                    chatID: chatID,
+                    messageID: entry.id,
+                    chatTitle: chat.title,
+                    repoLine: "\(chat.repoFullName) #\(chat.number)",
+                    author: entry.author,
+                    snippet: snippet,
+                    createdAt: entry.createdAt
+                ))
+                if hits.count >= 60 { break outer }
+            }
+        }
+        hits.sort { $0.createdAt > $1.createdAt }
+        return (chatHits, hits)
+    }
+
+    /// Open a message search hit: select its chat, scroll to the message, flash it.
+    func open(hit: MessageHit) {
+        jumpTarget = MessageJump(chatID: hit.chatID, messageID: hit.messageID)
+        highlightedMessageID = hit.messageID
+        selectedChatID = hit.chatID
+        let flashed = hit.messageID
+        Task {
+            try? await Task.sleep(for: .seconds(2.4))
+            if self.highlightedMessageID == flashed { self.highlightedMessageID = nil }
+        }
     }
 }

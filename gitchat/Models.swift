@@ -75,6 +75,33 @@ struct RepoInfo: Codable, Hashable, Identifiable {
     var id: String { fullName }
 }
 
+/// One searchable message (or stand-in) in the per-chat search index.
+struct IndexedMessage {
+    var id: String
+    var author: GHUserRef
+    var text: String
+    var createdAt: Date
+}
+
+/// A "scroll to this message" request; token makes repeat jumps distinct.
+struct MessageJump: Equatable {
+    var chatID: String
+    var messageID: String
+    var token = UUID()
+}
+
+/// A full-text search result pointing at one message.
+struct MessageHit: Identifiable {
+    var chatID: String
+    var messageID: String
+    var chatTitle: String
+    var repoLine: String
+    var author: GHUserRef
+    var snippet: String
+    var createdAt: Date
+    var id: String { chatID + "|" + messageID }
+}
+
 enum ChatFilter: String, CaseIterable, Identifiable {
     case all = "All Chats"
     case unread = "Unread"

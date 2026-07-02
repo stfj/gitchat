@@ -89,10 +89,18 @@ struct SidebarView: View {
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
     }
 
-    private var chatList: some View {
+    @ViewBuilder private var chatList: some View {
+        if isSearching {
+            searchList
+        } else {
+            normalList
+        }
+    }
+
+    private var normalList: some View {
         let rows = app.rows()
         let pinned = app.pinnedChats()
-        let showPinned = !isSearching && app.filter == .all && !pinned.isEmpty
+        let showPinned = app.filter == .all && !pinned.isEmpty
 
         return List(selection: $app.selectedChatID) {
             if showPinned {
@@ -110,6 +118,35 @@ struct SidebarView: View {
                 }
             }
             if rows.isEmpty && !showPinned {
+                emptyState
+                    .listRowSeparator(.hidden)
+            }
+        }
+        .listStyle(.sidebar)
+    }
+
+    private var searchList: some View {
+        let results = app.searchResults(app.searchText)
+        return List(selection: $app.selectedChatID) {
+            if !results.chats.isEmpty {
+                Section("Chats") {
+                    ForEach(results.chats) { row in
+                        ChatRowView(row: row)
+                            .tag(row.chat.id as String?)
+                            .contextMenu { ChatContextMenu(chat: row.chat).environmentObject(app) }
+                    }
+                }
+            }
+            if !results.messages.isEmpty {
+                Section("Messages") {
+                    ForEach(results.messages) { hit in
+                        MessageHitRow(hit: hit, query: app.searchText)
+                            .contentShape(Rectangle())
+                            .onTapGesture { app.open(hit: hit) }
+                    }
+                }
+            }
+            if results.chats.isEmpty && results.messages.isEmpty {
                 emptyState
                     .listRowSeparator(.hidden)
             }
@@ -262,8 +299,58 @@ struct ChatRowView: View {
     }
 
     private var snippetLine: String {
-        if let match = row.matchSnippet { return match }
         let mine = chat.lastMessageAuthor?.login == app.me?.login
         return (mine ? "You: " : "") + previewSnippet(chat.lastMessageSnippet)
+    }
+}
+
+// MARK: - Full-text search result row
+
+struct MessageHitRow: View {
+    let hit: MessageHit
+    let query: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            AvatarView(user: hit.author, size: 30)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 1.5) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(hit.chatTitle)
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                    Spacer(minLength: 6)
+                    Text(hit.createdAt.chatStamp)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
+                Text(hit.repoLine)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text(highlightedSnippet)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+        }
+        .padding(.vertical, 3)
+        .help("Jump to this message")
+    }
+
+    private var highlightedSnippet: AttributedString {
+        let full = "\(hit.author.login): \(hit.snippet)"
+        var attr = AttributedString(full)
+        let q = query.trimmingCharacters(in: .whitespaces)
+        if !q.isEmpty,
+           let r = full.range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) {
+            let startOffset = full.distance(from: full.startIndex, to: r.lowerBound)
+            let length = full.distance(from: r.lowerBound, to: r.upperBound)
+            let s = attr.index(attr.startIndex, offsetByCharacters: startOffset)
+            let e = attr.index(s, offsetByCharacters: length)
+            attr[s..<e].inlinePresentationIntent = .stronglyEmphasized
+            attr[s..<e].foregroundColor = .primary
+        }
+        return attr
     }
 }

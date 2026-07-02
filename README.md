@@ -31,8 +31,10 @@ issue you can see on GitHub as an iMessage-style conversation.
   search always finds closed threads.
 - **Notifications** for new messages and new issues in non-ignored chats, with
   inline reply straight from the notification. Opening a chat clears them.
-- **Search** (⌘F) across titles, repos, authors, and full message history —
-  matches show a snippet of the matching message.
+- **Search** (⌘F) returns two sections, Messages-style: chats whose
+  title/repo/author match, and every individual message containing the query
+  (match shown bold in the preview). Clicking a message result opens its chat,
+  scrolls to that exact message, and flashes a highlight ring on it.
 - **Images** in conversations render inline; click one and it scales up into an
   in-window viewer (click anywhere, the ✕, or Esc to close; right-click for
   "Open in Browser"). Dragged-in
