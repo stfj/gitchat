@@ -198,6 +198,14 @@ func stableAvatarColor(_ login: String) -> Color {
     return Color(hue: hue, saturation: 0.5, brightness: 0.75)
 }
 
+/// Same hue as the avatar, tuned darker/deeper so name labels stay readable
+/// on both light and dark backgrounds.
+func stableNameColor(_ login: String) -> Color {
+    let h = login.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) }
+    let hue = Double(abs(h) % 360) / 360.0
+    return Color(hue: hue, saturation: 0.62, brightness: 0.68)
+}
+
 extension Notification.Name {
     static let gcFocusSearch = Notification.Name("gitchat.focusSearch")
 }

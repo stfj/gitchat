@@ -14,7 +14,14 @@ issue you can see on GitHub as an iMessage-style conversation.
   grid of circles), conversation on the right rendered as chat bubbles: the
   issue body is the first message, comments follow, yours on the right in blue.
 - **Reply from the composer** (Return sends, ⌥Return for a newline) — posts a
-  real GitHub comment. Failed sends show a retry button.
+  real GitHub comment. Failed sends show a retry button. Typing `@` pops up
+  username autocomplete (recent speakers in the chat first, then assignees and
+  repo collaborators; ↑/↓ to pick, Tab/Return to accept, Esc to dismiss).
+- **Markdown renders properly in bubbles** — headings, bullet/numbered lists,
+  task lists, blockquotes, code blocks, tables, and rules, plus inline
+  bold/italic/code/links. `@mentions` are highlighted and click through to the
+  user's GitHub profile, and sender names above bubbles get a stable per-user
+  color (matching their avatar hue), like group iMessage.
 - **New issues** (⌘N): pick a repo (sorted by most recent chat activity,
   searchable), write title/body, toggle labels and assignees, drag images in.
 - **Pin / Ignore** any chat (toolbar buttons or right-click). Ignored chats are

@@ -192,8 +192,8 @@ struct MessageBubbleRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     if showHeader {
                         Text(message.author.login)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.secondary)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(stableNameColor(message.author.login))
                             .padding(.leading, 9)
                     }
                     bubble(alignRight: false)
@@ -257,6 +257,7 @@ struct BubbleContent: View {
             RoundedRectangle(cornerRadius: 17, style: .continuous)
                 .fill(isMine ? AnyShapeStyle(bubbleBlue) : AnyShapeStyle(bubbleGray))
         )
+        .tint(isMine ? Color.white : bubbleLinkColor)   // links: readable on both bubble grays
         .frame(maxWidth: 480, alignment: .leading)
     }
 
@@ -272,67 +273,6 @@ struct BubbleContent: View {
                 ? NSColor(calibratedWhite: 0.235, alpha: 1)
                 : NSColor(calibratedRed: 0.914, green: 0.914, blue: 0.922, alpha: 1)
         })
-    }
-}
-
-struct MessageTextView: View {
-    let text: String
-    let isMine: Bool
-
-    enum Segment {
-        case text(String)
-        case code(String)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(Self.segments(text).enumerated()), id: \.offset) { _, segment in
-                switch segment {
-                case .text(let s):
-                    Text(Self.attributed(s))
-                        .font(.system(size: 13))
-                        .foregroundStyle(isMine ? Color.white : Color.primary)
-                        .tint(isMine ? Color.white : Color.accentColor)
-                        .textSelection(.enabled)
-                case .code(let s):
-                    Text(s)
-                        .font(.system(size: 11.5, design: .monospaced))
-                        .textSelection(.enabled)
-                        .foregroundStyle(isMine ? Color.white : Color.primary)
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(RoundedRectangle(cornerRadius: 8)
-                            .fill(Color.black.opacity(isMine ? 0.25 : 0.06)))
-                }
-            }
-        }
-    }
-
-    static func segments(_ s: String) -> [Segment] {
-        var out: [Segment] = []
-        let parts = s.components(separatedBy: "```")
-        for (i, part) in parts.enumerated() {
-            if i % 2 == 0 {
-                let trimmed = part.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty { out.append(.text(trimmed)) }
-            } else {
-                var code = part
-                // Drop a leading language tag line ("swift\n…").
-                if let nl = code.firstIndex(of: "\n"),
-                   code[code.startIndex..<nl].allSatisfy({ !$0.isWhitespace }) {
-                    code = String(code[code.index(after: nl)...])
-                }
-                let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty { out.append(.code(trimmed)) }
-            }
-        }
-        return out
-    }
-
-    static func attributed(_ s: String) -> AttributedString {
-        (try? AttributedString(markdown: s, options: AttributedString.MarkdownParsingOptions(
-            interpretedSyntax: .inlineOnlyPreservingWhitespace
-        ))) ?? AttributedString(s)
     }
 }
 
@@ -378,6 +318,8 @@ struct ComposerView: View {
     let chatID: String
     @StateObject private var bin = AttachmentBin()
     @State private var dropTargeted = false
+    @State private var mentionSelection = 0
+    @State private var mentionDismissed = false
     @FocusState private var focused: Bool
 
     private var draft: Binding<String> {
@@ -392,8 +334,29 @@ struct ComposerView: View {
         return (hasText || bin.hasUploads) && !bin.uploadsInFlight
     }
 
+    // The "@prefix" being typed at the end of the draft, if any. (SwiftUI's
+    // TextField doesn't expose the caret, so completion works at the tail —
+    // which is where chat typing happens anyway.)
+    private var mentionQuery: String? {
+        guard !mentionDismissed else { return nil }
+        let text = app.drafts[chatID] ?? ""
+        guard let r = text.range(of: "(?<=^|[\\s(])@([A-Za-z0-9-]{0,39})$", options: .regularExpression) else {
+            return nil
+        }
+        return String(text[r].dropFirst())
+    }
+
+    private var mentionMatches: [GHUserRef] {
+        guard let q = mentionQuery else { return [] }
+        return app.mentionCandidates(chatID: chatID, prefix: q)
+    }
+
     var body: some View {
+        let candidates = mentionMatches
         VStack(spacing: 4) {
+            if !candidates.isEmpty {
+                mentionStrip(candidates)
+            }
             if !bin.items.isEmpty {
                 AttachmentChipsView(bin: bin)
             }
@@ -421,6 +384,32 @@ struct ComposerView: View {
                     )
                     .focused($focused)
                     .onSubmit { send() }
+                    .onKeyPress(.downArrow) {
+                        let count = mentionMatches.count
+                        guard count > 0 else { return .ignored }
+                        mentionSelection = min(mentionSelection + 1, count - 1)
+                        return .handled
+                    }
+                    .onKeyPress(.upArrow) {
+                        guard !mentionMatches.isEmpty else { return .ignored }
+                        mentionSelection = max(0, mentionSelection - 1)
+                        return .handled
+                    }
+                    .onKeyPress(.tab) {
+                        guard let user = selectedMention() else { return .ignored }
+                        acceptMention(user)
+                        return .handled
+                    }
+                    .onKeyPress(.return) {
+                        guard let user = selectedMention() else { return .ignored }
+                        acceptMention(user)
+                        return .handled
+                    }
+                    .onKeyPress(.escape) {
+                        guard mentionQuery != nil else { return .ignored }
+                        mentionDismissed = true
+                        return .handled
+                    }
 
                 Button {
                     send()
@@ -448,6 +437,65 @@ struct ComposerView: View {
             }
         }
         .onAppear { focused = true }
+        .onChange(of: app.drafts[chatID] ?? "") { _, _ in
+            mentionDismissed = false
+            mentionSelection = 0
+        }
+        .onChange(of: mentionQuery) { _, query in
+            if query != nil, let repo = app.chats[chatID]?.repoFullName {
+                app.ensureAssignables(for: repo)
+            }
+        }
+    }
+
+    private func selectedMention() -> GHUserRef? {
+        let candidates = mentionMatches
+        guard !candidates.isEmpty else { return nil }
+        return candidates[min(mentionSelection, candidates.count - 1)]
+    }
+
+    private func acceptMention(_ user: GHUserRef) {
+        var text = app.drafts[chatID] ?? ""
+        if let r = text.range(of: "(?<=^|[\\s(])@[A-Za-z0-9-]{0,39}$", options: .regularExpression) {
+            text.replaceSubrange(r, with: "@\(user.login) ")
+            app.drafts[chatID] = text
+        }
+    }
+
+    private func mentionStrip(_ candidates: [GHUserRef]) -> some View {
+        let selected = min(mentionSelection, candidates.count - 1)
+        return VStack(alignment: .leading, spacing: 1) {
+            ForEach(Array(candidates.enumerated()), id: \.element.login) { i, user in
+                Button {
+                    acceptMention(user)
+                } label: {
+                    HStack(spacing: 7) {
+                        AvatarView(user: user, size: 18)
+                        Text(user.login)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(stableNameColor(user.login))
+                        Spacer(minLength: 12)
+                        if i == selected {
+                            Text("⇥ or ↩")
+                                .font(.system(size: 9.5))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4.5)
+                    .background(RoundedRectangle(cornerRadius: 7)
+                        .fill(i == selected ? Color.accentColor.opacity(0.16) : Color.clear))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .onHover { hovering in
+                    if hovering { mentionSelection = i }
+                }
+            }
+        }
+        .padding(5)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08), lineWidth: 1))
     }
 
     private func send() {

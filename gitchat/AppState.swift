@@ -509,6 +509,47 @@ final class AppState: ObservableObject {
         onShowWindow?()
     }
 
+    // MARK: - @mention autocomplete
+
+    @Published private(set) var assignableUsers: [String: [GHUserRef]] = [:]
+    private var assignableFetching: Set<String> = []
+
+    /// Lazily fetch a repo's assignable users the first time a mention popup opens there.
+    func ensureAssignables(for repo: String) {
+        guard assignableUsers[repo] == nil, !assignableFetching.contains(repo), let api else { return }
+        assignableFetching.insert(repo)
+        Task {
+            let users = (try? await api.assignableUsers(repo)) ?? []
+            self.assignableUsers[repo] = users.map { $0.ref }
+            self.assignableFetching.remove(repo)
+        }
+    }
+
+    /// Ranked candidates: most recent speakers in this chat first, then
+    /// assignees and the issue author, then the repo's collaborators.
+    func mentionCandidates(chatID: String, prefix: String) -> [GHUserRef] {
+        guard let chat = chats[chatID] else { return [] }
+        var out: [GHUserRef] = []
+        var seen = Set<String>()
+        let myLogin = me?.login.lowercased() ?? ""
+        func add(_ u: GHUserRef) {
+            let key = u.login.lowercased()
+            guard key != "ghost", key != myLogin, seen.insert(key).inserted else { return }
+            out.append(u)
+        }
+        for message in (transcripts[chatID] ?? []).reversed() { add(message.author) }
+        chat.assignees.forEach { add($0) }
+        add(chat.author)
+        (assignableUsers[chat.repoFullName] ?? []).forEach { add($0) }
+
+        let p = prefix.lowercased()
+        guard !p.isEmpty else { return Array(out.prefix(6)) }
+        let matching = out.filter { $0.login.lowercased().contains(p) }
+        let prefixed = matching.filter { $0.login.lowercased().hasPrefix(p) }
+        let rest = matching.filter { !$0.login.lowercased().hasPrefix(p) }
+        return Array((prefixed + rest).prefix(6))
+    }
+
     func fetchRepoMeta(_ repo: String) async -> (labels: [GHLabel], assignees: [GHUser]) {
         guard let api else { return ([], []) }
         async let l = (try? api.labels(repo)) ?? []
