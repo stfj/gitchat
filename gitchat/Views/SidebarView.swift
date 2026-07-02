@@ -99,15 +99,20 @@ struct SidebarView: View {
 
     private var normalList: some View {
         let rows = app.rows()
-        let pinned = app.pinnedChats()
-        let showPinned = app.filter == .all && !pinned.isEmpty
+        let pinned = app.filter == .all ? app.pinnedChats() : []
 
         return List(selection: $app.selectedChatID) {
-            if showPinned {
+            if !pinned.isEmpty {
                 Section {
-                    PinnedGridView(chats: pinned)
+                    ForEach(pinned) { chat in
+                        ChatRowView(row: ChatRowModel(chat: chat))
+                            .tag(chat.id as String?)
+                            .contextMenu { ChatContextMenu(chat: chat).environmentObject(app) }
+                    }
+                    // Slight split between pinned chats and the rest.
+                    Divider()
                         .listRowSeparator(.hidden)
-                        .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 8, trailing: 6))
+                        .listRowInsets(EdgeInsets(top: 5, leading: 10, bottom: 3, trailing: 10))
                 }
             }
             Section {
@@ -117,7 +122,7 @@ struct SidebarView: View {
                         .contextMenu { ChatContextMenu(chat: row.chat).environmentObject(app) }
                 }
             }
-            if rows.isEmpty && !showPinned {
+            if rows.isEmpty && pinned.isEmpty {
                 emptyState
                     .listRowSeparator(.hidden)
             }
@@ -192,49 +197,6 @@ struct SidebarView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
-    }
-}
-
-// MARK: - Pinned grid (Messages-style circles up top)
-
-struct PinnedGridView: View {
-    @EnvironmentObject var app: AppState
-    let chats: [Chat]
-
-    private let columns = [GridItem(.adaptive(minimum: 74), spacing: 4)]
-
-    var body: some View {
-        LazyVGrid(columns: columns, spacing: 8) {
-            ForEach(chats) { chat in
-                VStack(spacing: 3) {
-                    ZStack(alignment: .topTrailing) {
-                        AvatarView(user: chat.lastMessageAuthor ?? chat.author, size: 52)
-                            .overlay(Circle().stroke(Color.primary.opacity(0.08), lineWidth: 1))
-                        if chat.unreadCount > 0 {
-                            Text("\(chat.unreadCount)")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1.5)
-                                .background(Capsule().fill(Color.blue))
-                                .offset(x: 7, y: -3)
-                        }
-                    }
-                    Text(chat.title)
-                        .font(.system(size: 10.5, weight: chat.unreadCount > 0 ? .semibold : .regular))
-                        .lineLimit(1)
-                        .frame(maxWidth: 78)
-                    Text(chat.repoFullName.components(separatedBy: "/").last ?? "")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                .padding(.vertical, 3)
-                .contentShape(Rectangle())
-                .onTapGesture { app.selectedChatID = chat.id }
-                .contextMenu { ChatContextMenu(chat: chat).environmentObject(app) }
-            }
-        }
     }
 }
 
