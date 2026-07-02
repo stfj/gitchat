@@ -3,8 +3,6 @@
 Your GitHub issues, as chats. A native macOS menu bar app that presents every
 issue you can see on GitHub as an iMessage-style conversation.
 
-![gitchat icon](gitchat/Assets.xcassets/AppIcon.appiconset/icon_128.png)
-
 ## What it does
 
 - **Menu bar item with an unread count** (Dropbox-style). Left-click toggles the
