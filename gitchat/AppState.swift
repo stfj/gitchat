@@ -520,10 +520,19 @@ final class AppState: ObservableObject {
         guard let api else { throw APIError.unauthorized }
         let issue = try await api.createIssue(repo, title: title, body: body,
                                               labels: labels, assignees: assignees)
+        if !labels.isEmpty {
+            for label in labels { meta.labelUsage[label, default: 0] += 1 }
+            store.saveMeta(meta)
+        }
         _ = await upsert(issue: issue, repo: repo, isInitial: false)
         store.saveChats(chats)
         selectedChatID = Chat.key(repo: repo, number: issue.number)
         onShowWindow?()
+    }
+
+    /// How often the user has applied this label when creating issues.
+    func labelUsage(_ name: String) -> Int {
+        meta.labelUsage[name] ?? 0
     }
 
     // MARK: - @mention autocomplete

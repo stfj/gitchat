@@ -13,6 +13,7 @@ struct NewChatView: View {
     @State private var repoAssignees: [GHUser] = []
     @State private var pickedLabels: Set<String> = []
     @State private var pickedAssignees: Set<String> = []
+    @State private var labelFilter = ""
     @State private var creating = false
     @State private var dropTargeted = false
     @StateObject private var bin = AttachmentBin()
@@ -92,6 +93,7 @@ struct NewChatView: View {
         .onChange(of: repo?.fullName) { _, newValue in
             pickedLabels = []
             pickedAssignees = []
+            labelFilter = ""
             repoLabels = []
             repoAssignees = []
             guard let newValue else { return }
@@ -107,33 +109,113 @@ struct NewChatView: View {
 
     private var labelsSection: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text("LABELS")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(repoLabels, id: \.name) { label in
-                        let picked = pickedLabels.contains(label.name)
-                        Button {
-                            if picked { pickedLabels.remove(label.name) }
-                            else { pickedLabels.insert(label.name) }
-                        } label: {
-                            HStack(spacing: 3) {
-                                if picked { Image(systemName: "checkmark").font(.system(size: 8, weight: .bold)) }
-                                Text(label.name).font(.system(size: 11, weight: .medium))
+            HStack(spacing: 6) {
+                Text("LABELS")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                if !pickedLabels.isEmpty {
+                    Text("·")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 4) {
+                            ForEach(pickedLabels.sorted(), id: \.self) { name in
+                                let color = labelColor(name)
+                                Button {
+                                    pickedLabels.remove(name)
+                                } label: {
+                                    HStack(spacing: 3) {
+                                        Text(name).font(.system(size: 10, weight: .medium))
+                                        Image(systemName: "xmark")
+                                            .font(.system(size: 7, weight: .bold))
+                                            .opacity(0.65)
+                                    }
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Capsule().fill(color.opacity(0.32)))
+                                    .overlay(Capsule().stroke(color.opacity(0.7), lineWidth: 1))
+                                }
+                                .buttonStyle(.plain)
+                                .help("Remove \(name)")
                             }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3.5)
-                            .background(Capsule().fill(Color(hexLabel: label.color ?? "8b949e")
-                                .opacity(picked ? 0.45 : 0.15)))
-                            .overlay(Capsule().stroke(Color(hexLabel: label.color ?? "8b949e")
-                                .opacity(picked ? 0.9 : 0.4), lineWidth: 1))
+                        }
+                    }
+                    .frame(height: 19)
+                }
+            }
+            HStack(spacing: 8) {
+                HStack(spacing: 4) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                    TextField("Filter", text: $labelFilter)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11))
+                    if !labelFilter.isEmpty {
+                        Button {
+                            labelFilter = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(.vertical, 1)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3.5)
+                .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.06)))
+                .frame(width: 132)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(visibleLabels, id: \.name) { label in
+                            let picked = pickedLabels.contains(label.name)
+                            Button {
+                                if picked { pickedLabels.remove(label.name) }
+                                else { pickedLabels.insert(label.name) }
+                            } label: {
+                                HStack(spacing: 3) {
+                                    if picked { Image(systemName: "checkmark").font(.system(size: 8, weight: .bold)) }
+                                    Text(label.name).font(.system(size: 11, weight: .medium))
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3.5)
+                                .background(Capsule().fill(Color(hexLabel: label.color ?? "8b949e")
+                                    .opacity(picked ? 0.45 : 0.15)))
+                                .overlay(Capsule().stroke(Color(hexLabel: label.color ?? "8b949e")
+                                    .opacity(picked ? 0.9 : 0.4), lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        if visibleLabels.isEmpty {
+                            Text("No labels match")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .padding(.vertical, 1)
+                }
             }
+        }
+    }
+
+    private func labelColor(_ name: String) -> Color {
+        Color(hexLabel: repoLabels.first(where: { $0.name == name })?.color ?? "8b949e")
+    }
+
+    /// Filtered by the box on the left; most-used labels first, then alphabetical.
+    private var visibleLabels: [GHLabel] {
+        let f = labelFilter.trimmingCharacters(in: .whitespaces).lowercased()
+        var list = repoLabels
+        if !f.isEmpty {
+            list = list.filter { $0.name.lowercased().contains(f) }
+        }
+        return list.sorted { a, b in
+            let ua = app.labelUsage(a.name)
+            let ub = app.labelUsage(b.name)
+            if ua != ub { return ua > ub }
+            return a.name.lowercased() < b.name.lowercased()
         }
     }
 

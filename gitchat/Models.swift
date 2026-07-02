@@ -144,6 +144,7 @@ struct StoreMeta: Codable {
     var lastFirehose: Date? = nil
     var initialSyncDone: Bool = false
     var cyclesRun: Int = 0
+    var labelUsage: [String: Int] = [:]   // label name → times applied when creating issues
 
     init() {}
     init(from decoder: Decoder) throws {
@@ -151,6 +152,7 @@ struct StoreMeta: Codable {
         lastFirehose = try c.decodeIfPresent(Date.self, forKey: .lastFirehose)
         initialSyncDone = try c.decodeIfPresent(Bool.self, forKey: .initialSyncDone) ?? false
         cyclesRun = try c.decodeIfPresent(Int.self, forKey: .cyclesRun) ?? 0
+        labelUsage = try c.decodeIfPresent([String: Int].self, forKey: .labelUsage) ?? [:]
     }
 }
 
