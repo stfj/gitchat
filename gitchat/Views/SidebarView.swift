@@ -29,8 +29,7 @@ struct SidebarView: View {
                     }
                     .pickerStyle(.inline)
                     Divider()
-                    Toggle("Show Closed Issues", isOn: $app.settings.showClosed)
-                    Toggle("Include Pull Requests", isOn: $app.settings.includePullRequests)
+                    Toggle("Show Closed", isOn: $app.settings.showClosed)
                     Button("Mark All as Read") { app.markAllRead() }
                 } label: {
                     Image(systemName: app.filter == .all
@@ -55,13 +54,21 @@ struct SidebarView: View {
     }
 
     private var header: some View {
-        HStack {
-            Text(app.filter == .all ? "Chats" : app.filter.rawValue)
-                .font(.system(size: 20, weight: .bold))
-            Spacer()
+        Picker("Tab", selection: $app.sidebarTab) {
+            ForEach(SidebarTab.allCases) { tab in
+                Text(tabLabel(tab)).tag(tab)
+            }
         }
-        .padding(.horizontal, 12)
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .padding(.horizontal, 10)
         .padding(.top, 10)
+    }
+
+    private func tabLabel(_ tab: SidebarTab) -> String {
+        let unread = app.unreadCount(for: tab)
+        let name = tab == .prs ? "PRs" : tab.rawValue
+        return unread > 0 ? "\(name) • \(unread)" : name
     }
 
     private var searchField: some View {
@@ -232,17 +239,11 @@ struct ChatRowView: View {
                         .foregroundStyle(.secondary)
                 }
                 HStack(spacing: 4) {
-                    StateDot(isOpen: chat.isOpen)
+                    StateDot(isOpen: chat.isOpen, merged: chat.prMerged ?? !chat.isPullRequest)
                     Text("\(chat.repoFullName) #\(chat.number)")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    if chat.isPullRequest {
-                        Text("PR")
-                            .font(.system(size: 8.5, weight: .bold))
-                            .padding(.horizontal, 3).padding(.vertical, 0.5)
-                            .background(RoundedRectangle(cornerRadius: 3).fill(Color.secondary.opacity(0.18)))
-                    }
                     if chat.ignored {
                         Image(systemName: "bell.slash.fill")
                             .font(.system(size: 9))

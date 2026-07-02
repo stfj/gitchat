@@ -14,6 +14,9 @@ final class Store {
     nonisolated static var transcriptsDir: URL {
         baseDir.appendingPathComponent("transcripts", isDirectory: true)
     }
+    nonisolated static var translationsDir: URL {
+        baseDir.appendingPathComponent("translations", isDirectory: true)
+    }
 
     private var chatsURL: URL { Self.baseDir.appendingPathComponent("chats.json") }
     private var reposURL: URL { Self.baseDir.appendingPathComponent("repos.json") }
@@ -36,6 +39,7 @@ final class Store {
 
     init() {
         try? FileManager.default.createDirectory(at: Self.transcriptsDir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: Self.translationsDir, withIntermediateDirectories: true)
     }
 
     private struct ChatsFile: Codable {
@@ -121,6 +125,26 @@ final class Store {
         messageIndex[chat.id] = Self.entries(from: messages)
     }
 
+    // MARK: PR translations
+
+    func hasTranslation(_ chat: Chat) -> Bool {
+        FileManager.default.fileExists(
+            atPath: Self.translationsDir.appendingPathComponent(chat.fileKey + ".json").path)
+    }
+
+    func loadTranslation(_ chat: Chat) -> StoredTranslation? {
+        let url = Self.translationsDir.appendingPathComponent(chat.fileKey + ".json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? Self.dec.decode(StoredTranslation.self, from: data)
+    }
+
+    func saveTranslation(_ chat: Chat, _ translation: StoredTranslation) {
+        let url = Self.translationsDir.appendingPathComponent(chat.fileKey + ".json")
+        if let data = try? Self.enc.encode(translation) {
+            try? data.write(to: url, options: [.atomic])
+        }
+    }
+
     // MARK: search index
 
     nonisolated private static func entries(from messages: [Message]) -> [IndexedMessage] {
@@ -176,6 +200,7 @@ final class Store {
     func wipe() {
         try? FileManager.default.removeItem(at: Self.baseDir)
         try? FileManager.default.createDirectory(at: Self.transcriptsDir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: Self.translationsDir, withIntermediateDirectories: true)
         messageIndex = [:]
     }
 }

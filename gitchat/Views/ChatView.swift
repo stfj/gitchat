@@ -6,12 +6,23 @@ struct ChatView: View {
     @EnvironmentObject var app: AppState
     let chatID: String
 
+    /// PRs default to the plain-English summary when one exists or can be made.
+    private var showSummary: Bool {
+        guard let chat = app.chats[chatID], chat.isPullRequest else { return false }
+        guard !app.showRawPR.contains(chatID) else { return false }
+        return app.translations[chatID] != nil || app.hasAIKey
+    }
+
     var body: some View {
         if let chat = app.chats[chatID] {
             VStack(spacing: 0) {
                 chatHeader(chat)
                 Divider()
-                TranscriptView(chatID: chatID)
+                if showSummary {
+                    PRSummaryView(chatID: chatID)
+                } else {
+                    TranscriptView(chatID: chatID)
+                }
                 Divider()
                 ComposerView(chatID: chatID)
             }
@@ -32,16 +43,18 @@ struct ChatView: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 6) {
-                StateDot(isOpen: chat.isOpen)
+                StateDot(isOpen: chat.isOpen, merged: chat.prMerged ?? !chat.isPullRequest)
                 Text("\(chat.repoFullName) #\(chat.number)")
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
                 if !chat.isOpen {
-                    Text("Closed")
+                    let merged = chat.prMerged ?? false
+                    Text(chat.isPullRequest && merged ? "Merged" : "Closed")
                         .font(.system(size: 9.5, weight: .semibold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 6).padding(.vertical, 1.5)
-                        .background(Capsule().fill(Color.purple))
+                        .background(Capsule().fill(
+                            chat.isPullRequest && !merged ? Color.red.opacity(0.85) : Color.purple))
                 }
                 if chat.isPullRequest {
                     Text("PR")
@@ -87,6 +100,15 @@ struct ChatView: View {
     @ToolbarContentBuilder
     private func chatToolbar(_ chat: Chat) -> some ToolbarContent {
         ToolbarItemGroup {
+            if chat.isPullRequest {
+                Button {
+                    app.togglePRView(chatID: chatID)
+                } label: {
+                    Image(systemName: showSummary ? "text.bubble" : "wand.and.stars")
+                }
+                .help(showSummary ? "Show the full conversation" : "Show plain-English summary")
+            }
+
             Button {
                 app.togglePin(chatID)
             } label: {
@@ -168,8 +190,11 @@ struct TranscriptView: View {
         // defaultScrollAnchor keeps the log pinned to the newest message, and
         // the declarative scrollPosition binding handles jump-to-message.
         let myLogin = app.me?.login
+        // Plain VStack, NOT LazyVStack: lazy prefetch re-marks the window for
+        // constraint passes from inside layout (LazyLayoutViewCache.signalPrefetch),
+        // which pinwheels and then crashes with NSGenericException.
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 2) {
                 if stillLoading {
                     HStack {
                         Spacer()
@@ -221,14 +246,22 @@ struct TranscriptView: View {
 // Non-observing handle to AppState: rows can trigger actions without
 // subscribing to every published change (that subscription made all rows
 // re-render on each keystroke/sync tick — the scroll chunkiness).
+// Equatable wrapper matters: with a non-Equatable env value SwiftUI can't
+// prove it unchanged, which invalidates every reader on every render and
+// defeats the rows' .equatable() short-circuit.
+struct AppStateRef: Equatable {
+    weak var value: AppState?
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.value === rhs.value }
+}
+
 private struct AppStateRefKey: EnvironmentKey {
-    static let defaultValue: AppState? = nil
+    static let defaultValue = AppStateRef(value: nil)
 }
 
 extension EnvironmentValues {
     var appStateRef: AppState? {
-        get { self[AppStateRefKey.self] }
-        set { self[AppStateRefKey.self] = newValue }
+        get { self[AppStateRefKey.self].value }
+        set { self[AppStateRefKey.self] = AppStateRef(value: newValue) }
     }
 }
 
@@ -360,6 +393,99 @@ struct MessageBubbleRow: View, Equatable {
     }
 }
 
+/// Plain-English PR summary shown in place of the conversation (toggle in toolbar).
+struct PRSummaryView: View {
+    @EnvironmentObject var app: AppState
+    let chatID: String
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 6) {
+                    Image(systemName: "wand.and.stars")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.purple)
+                    Text("Plain-English Summary")
+                        .font(.system(size: 12.5, weight: .semibold))
+                    Spacer()
+                    if case .done(let stored) = app.translations[chatID] {
+                        Text("\(stored.model) · \(stored.createdAt.chatStamp)")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+
+                switch app.translations[chatID] {
+                case .loading:
+                    VStack(spacing: 10) {
+                        ProgressView()
+                        Text("Reading the diff and translating…")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 60)
+                case .failed(let message):
+                    VStack(spacing: 10) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: 22))
+                            .foregroundStyle(.orange)
+                        Text(message)
+                            .font(.system(size: 12))
+                            .multilineTextAlignment(.center)
+                        Button("Try Again") { app.ensureTranslated(chatID: chatID, force: true) }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 40)
+                case .done(let stored):
+                    MessageTextView(text: stored.text, isMine: false)
+                    HStack(spacing: 10) {
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(stored.text, forType: .string)
+                        } label: {
+                            Label("Copy", systemImage: "doc.on.doc")
+                        }
+                        Button {
+                            app.ensureTranslated(chatID: chatID, force: true)
+                        } label: {
+                            Label("Regenerate", systemImage: "arrow.clockwise")
+                        }
+                        .help("Re-translate (e.g. after new commits)")
+                        Spacer()
+                    }
+                    .controlSize(.small)
+                    .padding(.top, 2)
+                case nil:
+                    // Key present but nothing kicked off yet (rare — chatOpened
+                    // triggers it); or no key at all.
+                    if app.hasAIKey {
+                        Color.clear.frame(height: 1)
+                            .onAppear { app.ensureTranslated(chatID: chatID) }
+                    } else {
+                        VStack(spacing: 8) {
+                            Text("Add an AI key to auto-translate PRs")
+                                .font(.system(size: 12, weight: .medium))
+                            Text("Settings → AI translation")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 40)
+                    }
+                }
+
+                Text("AI summary — press the 💬 button in the toolbar for the full conversation.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(16)
+            .frame(maxWidth: 640, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
 /// In-place editor swapped in for one of your bubbles (Return saves, Esc cancels).
 struct MessageEditView: View {
     @EnvironmentObject var app: AppState
@@ -453,24 +579,33 @@ struct BubbleContent: View {
 }
 
 struct AttachmentThumb: View {
-    @EnvironmentObject var app: AppState
+    @Environment(\.appStateRef) private var appRef
     let attachment: Attachment
+    @State private var image: NSImage?
 
     var body: some View {
         if attachment.isImage {
-            RemoteImage(url: attachment.url, contentMode: .fit) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color.primary.opacity(0.08))
-                        .frame(width: 220, height: 140)
-                    ProgressView().controlSize(.small)
+            Group {
+                if let image {
+                    // Explicit frame: a flexible aspect-fit inside the
+                    // width-hugging bubble gives layout a circular constraint.
+                    let size = Self.displaySize(image)
+                    Image(nsImage: image)
+                        .resizable()
+                        .frame(width: size.width, height: size.height)
+                } else {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.primary.opacity(0.08))
+                        ProgressView().controlSize(.small)
+                    }
+                    .frame(width: 220, height: 140)
                 }
             }
-            .frame(maxWidth: 320, maxHeight: 320)
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .contentShape(RoundedRectangle(cornerRadius: 12))
             .onTapGesture {
-                app.previewImageURL = attachment.url
+                appRef?.previewImageURL = attachment.url
             }
             .contextMenu {
                 Button("Open in Browser") {
@@ -478,12 +613,22 @@ struct AttachmentThumb: View {
                 }
             }
             .help("Click to view full size")
+            .task(id: attachment.url) {
+                image = await ImageLoader.shared.image(for: attachment.url)
+            }
         } else if let url = URL(string: attachment.url) {
             Link(destination: url) {
                 Label(attachment.alt ?? "attachment", systemImage: "paperclip")
                     .font(.system(size: 12))
             }
         }
+    }
+
+    nonisolated static func displaySize(_ image: NSImage) -> CGSize {
+        let w = max(image.size.width, 1)
+        let h = max(image.size.height, 1)
+        let scale = min(1, min(320 / w, 320 / h))
+        return CGSize(width: (w * scale).rounded(), height: (h * scale).rounded())
     }
 }
 

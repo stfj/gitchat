@@ -25,8 +25,14 @@ issue you can see on GitHub as an iMessage-style conversation.
 - **Pin / Ignore** any chat (toolbar buttons or right-click). Ignored chats are
   muted: no notifications, no badge, tucked under the Ignored filter.
 - **Closed issues auto-hide** once they're read and deselected (pinned ones
-  stay). Flip "Show Closed Issues" in the filter menu to see everything;
+  stay). Flip "Show Closed" in the filter menu to see everything;
   search always finds closed threads.
+- **Issues / PRs tabs** — the sidebar splits into two segments with per-tab
+  unread counts. PR chats show merged (purple) vs closed-unmerged (red) state,
+  and every PR gets a ✨ **Translate** button that turns the diff + description
+  into a plain-English summary for non-engineers (What changed / Why it
+  matters / Anything to watch). Bring your own key: Anthropic (default,
+  `claude-opus-4-8`) or OpenAI, configured in Settings → AI translation.
 - **Notifications** for new messages and new issues in non-ignored chats, with
   inline reply straight from the notification. Opening a chat clears them.
 - **Search** (⌘F) returns two sections, Messages-style: chats whose

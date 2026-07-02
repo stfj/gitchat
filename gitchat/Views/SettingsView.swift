@@ -32,7 +32,19 @@ struct SettingsView: View {
                     Text("1 month").tag(30)
                     Text("3 months").tag(90)
                 }
-                Toggle("Include pull requests", isOn: $app.settings.includePullRequests)
+            }
+
+            Section("AI translation (PRs)") {
+                Picker("Provider", selection: $app.aiConfig.provider) {
+                    Text("Anthropic (Claude)").tag("anthropic")
+                    Text("OpenAI").tag("openai")
+                }
+                TextField("Model", text: $app.aiConfig.model,
+                          prompt: Text(AITranslator.defaultModel(provider: app.aiConfig.provider)))
+                SecureField("API key", text: $app.aiConfig.key)
+                Text("Powers the ✨ Translate button on pull requests — explains the change in plain, non-engineer language. The key is stored locally and only sent to the provider you pick.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
             }
 
             Section("Notifications") {

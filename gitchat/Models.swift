@@ -40,6 +40,7 @@ struct Chat: Codable, Identifiable, Hashable {
     var pinned: Bool
     var ignored: Bool
     var transcriptSyncedAt: Date?
+    var prMerged: Bool?               // PRs only; optional so old caches decode
 
     static func key(repo: String, number: Int) -> String { "\(repo)#\(number)" }
 
@@ -91,6 +92,13 @@ struct MessageJump: Equatable {
     var token = UUID()
 }
 
+/// A persisted plain-English PR summary.
+struct StoredTranslation: Codable {
+    var text: String
+    var createdAt: Date
+    var model: String
+}
+
 /// A full-text search result pointing at one message.
 struct MessageHit: Identifiable {
     var chatID: String
@@ -101,6 +109,12 @@ struct MessageHit: Identifiable {
     var snippet: String
     var createdAt: Date
     var id: String { chatID + "|" + messageID }
+}
+
+enum SidebarTab: String, CaseIterable, Identifiable {
+    case issues = "Issues"
+    case prs = "Pull Requests"
+    var id: String { rawValue }
 }
 
 enum ChatFilter: String, CaseIterable, Identifiable {
@@ -148,6 +162,7 @@ struct StoreMeta: Codable {
     var initialSyncDone: Bool = false
     var cyclesRun: Int = 0
     var labelUsage: [String: Int] = [:]   // label name → times applied when creating issues
+    var prBackfillDone: Bool = false      // one-time re-sweep after PRs became first-class
 
     init() {}
     init(from decoder: Decoder) throws {
@@ -156,6 +171,7 @@ struct StoreMeta: Codable {
         initialSyncDone = try c.decodeIfPresent(Bool.self, forKey: .initialSyncDone) ?? false
         cyclesRun = try c.decodeIfPresent(Int.self, forKey: .cyclesRun) ?? 0
         labelUsage = try c.decodeIfPresent([String: Int].self, forKey: .labelUsage) ?? [:]
+        prBackfillDone = try c.decodeIfPresent(Bool.self, forKey: .prBackfillDone) ?? false
     }
 }
 

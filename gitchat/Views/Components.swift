@@ -236,9 +236,10 @@ struct LabelChip: View {
 
 struct StateDot: View {
     let isOpen: Bool
+    var merged: Bool = true   // closed issues + merged PRs → purple; unmerged closed PRs → red
     var body: some View {
         Circle()
-            .fill(isOpen ? Color.green : Color.purple)
+            .fill(isOpen ? Color.green : (merged ? Color.purple : Color.red))
             .frame(width: 5, height: 5)
     }
 }

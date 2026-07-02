@@ -327,9 +327,10 @@ struct SelectableMessageText: NSViewRepresentable {
     func sizeThatFits(_ proposal: ProposedViewSize, nsView view: MessageTextNSView, context: Context) -> CGSize? {
         var width = proposal.width ?? 456
         if !width.isFinite || width < 20 { width = 456 }
-        // Attributed strings come from a cache, so identity + width is a stable
-        // key; measuring long strings on every layout pass showed up in scroll.
-        let key = "\(UInt(bitPattern: ObjectIdentifier(attributed).hashValue))|\(Int(width.rounded()))" as NSString
+        // Key by CONTENT, never object identity: cache eviction + malloc reuse
+        // can put a different string at a recycled address, and a stale size
+        // answer here makes AppKit/SwiftUI layout loop forever (beachball).
+        let key = "\(attributed.length)|\(attributed.string.hashValue)|\(Int(width.rounded()))" as NSString
         if let hit = Self.sizeCache.object(forKey: key) { return hit.value }
         let bounds = attributed.boundingRect(
             with: NSSize(width: width, height: .greatestFiniteMagnitude),

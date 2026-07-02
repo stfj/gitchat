@@ -32,6 +32,15 @@ struct GHLabel: Codable, Hashable {
 
 struct GHPRMarker: Codable, Hashable {
     var url: String?
+    var mergedAt: Date?
+}
+
+struct GHPullFile: Codable {
+    var filename: String
+    var status: String?
+    var additions: Int?
+    var deletions: Int?
+    var patch: String?
 }
 
 struct GHIssue: Codable {
@@ -304,6 +313,10 @@ final class GitHubAPI {
 
     func labels(_ repo: String) async throws -> [GHLabel] {
         try await paged("repos/\(repo)/labels", maxPages: 1)
+    }
+
+    func pullFiles(_ repo: String, _ number: Int) async throws -> [GHPullFile] {
+        try await paged("repos/\(repo)/pulls/\(number)/files", maxPages: 3)
     }
 
     func assignableUsers(_ repo: String) async throws -> [GHUser] {

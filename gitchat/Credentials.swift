@@ -30,6 +30,24 @@ enum CredentialsVault {
         try? FileManager.default.removeItem(at: fileURL)
     }
 
+    // MARK: AI provider key (same 0600 trust model)
+
+    nonisolated static var aiURL: URL {
+        Store.baseDir.appendingPathComponent("ai.json")
+    }
+
+    nonisolated static func loadAI() -> AIConfig {
+        guard let data = try? Data(contentsOf: aiURL) else { return AIConfig() }
+        return (try? JSONDecoder().decode(AIConfig.self, from: data)) ?? AIConfig()
+    }
+
+    nonisolated static func saveAI(_ config: AIConfig) {
+        try? FileManager.default.createDirectory(at: Store.baseDir, withIntermediateDirectories: true)
+        guard let data = try? JSONEncoder().encode(config) else { return }
+        try? data.write(to: aiURL, options: [.atomic])
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: aiURL.path)
+    }
+
     // MARK: gh CLI integration
 
     nonisolated static let ghPaths = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh", "/opt/local/bin/gh"]

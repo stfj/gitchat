@@ -43,6 +43,7 @@ final class AppState: ObservableObject {
     }
     @Published var searchText = ""
     @Published var filter: ChatFilter = .all
+    @Published var sidebarTab: SidebarTab = .issues
     @Published var settings = AppSettings() { didSet { store.saveSettings(settings) } }
     @Published var syncStatusText = ""
     @Published var lastErrorText: String?
@@ -55,6 +56,21 @@ final class AppState: ObservableObject {
     @Published var editingMessage: EditingTarget?
     @Published var editDraft = ""
     @Published var editSaving = false
+    @Published var translations: [String: TranslationState] = [:]
+    @Published var showRawPR: Set<String> = []   // PR chats toggled to the raw conversation
+    @Published var aiConfig = CredentialsVault.loadAI() {
+        didSet { CredentialsVault.saveAI(aiConfig) }
+    }
+
+    enum TranslationState {
+        case loading
+        case done(StoredTranslation)
+        case failed(String)
+    }
+
+    var hasAIKey: Bool {
+        !aiConfig.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
     @Published var transcriptLoading: Set<String> = []
 
     struct EditingTarget: Equatable {
@@ -132,6 +148,12 @@ final class AppState: ObservableObject {
         if ProcessInfo.processInfo.environment["GITCHAT_DEBUG_GEO"] != nil {
             Task {
                 try? await Task.sleep(for: .seconds(2))
+                if let target = ProcessInfo.processInfo.environment["GITCHAT_SELECT"],
+                   self.chats[target] != nil {
+                    gclog("debug auto-select (env): \(target)")
+                    self.selectedChatID = target
+                    return
+                }
                 if let longest = self.chats.values.max(by: { $0.title.count < $1.title.count }) {
                     gclog("debug auto-select longest title (\(longest.title.count) chars): \(longest.id)")
                     self.selectedChatID = longest.id
@@ -221,6 +243,14 @@ final class AppState: ObservableObject {
             failures.append("issues: \(error.localizedDescription)")
         }
 
+        // One-time: PRs used to be filtered out; rewind repo cursors so the
+        // round-robin backfills the history window's PRs (silently, as read).
+        if !meta.prBackfillDone {
+            for i in repos.indices { repos[i].lastIssueSync = nil }
+            meta.prBackfillDone = true
+            gclog("PR backfill: rewound \(repos.count) repo cursors")
+        }
+
         // 3. Round-robin sweep of individual repos (catches anything the firehose
         //    misses, e.g. repos where issues exist but the account isn't a member).
         if api.rateRemaining > 300, failures.isEmpty || !isInitial {
@@ -254,6 +284,23 @@ final class AppState: ObservableObject {
             }
         }
 
+        // 5. Translation backfill: pre-translate untranslated PRs (a few per
+        //    cycle, newest first) so summaries are instant on open. Sequential
+        //    to stay gentle on the AI provider; one failure ends the batch —
+        //    a bad key or rate limit shouldn't burn three calls a minute.
+        if hasAIKey {
+            let untranslated = chats.values
+                .filter { $0.isPullRequest && translations[$0.id] == nil && !store.hasTranslation($0) }
+                .sorted { $0.lastMessageAt > $1.lastMessageAt }
+                .prefix(3)
+            if !untranslated.isEmpty {
+                gclog("translation backfill: \(untranslated.count) PR(s) this cycle")
+            }
+            for chat in untranslated {
+                if await !translateNow(chatID: chat.id) { break }
+            }
+        }
+
         if isInitial { meta.initialSyncDone = true }
         meta.cyclesRun += 1
         store.saveMeta(meta)
@@ -278,7 +325,6 @@ final class AppState: ObservableObject {
 
     /// Merge one issue payload into the chat list. Returns a notification to post, if any.
     private func upsert(issue: GHIssue, repo: String, isInitial: Bool) async -> NotificationItem? {
-        guard issue.pullRequest == nil || settings.includePullRequests else { return nil }
         guard let engine else { return nil }
         let id = Chat.key(repo: repo, number: issue.number)
         let labels = (issue.labels ?? []).map { LabelTag(name: $0.name, colorHex: $0.color ?? "8b949e") }
@@ -294,6 +340,7 @@ final class AppState: ObservableObject {
             chat.assignees = assignees
             chat.commentCount = issue.comments ?? chat.commentCount
             chat.updatedAt = issue.updatedAt
+            if let pr = issue.pullRequest { chat.prMerged = pr.mergedAt != nil }
             var notification: NotificationItem?
 
             if chat.commentCount > oldCount, !chat.ignored {
@@ -344,7 +391,8 @@ final class AppState: ObservableObject {
                 unreadCount: 0,
                 pinned: false,
                 ignored: false,
-                transcriptSyncedAt: nil
+                transcriptSyncedAt: nil,
+                prMerged: issue.pullRequest.map { $0.mergedAt != nil }
             )
             var notification: NotificationItem?
             // Metadata edits (labels, projects, milestones) bump updated_at and
@@ -356,7 +404,7 @@ final class AppState: ObservableObject {
                 chat.unreadCount = 1
                 notification = NotificationItem(
                     chatID: id,
-                    title: "New issue: \(issue.title)",
+                    title: "\(chat.isPullRequest ? "New PR" : "New issue"): \(issue.title)",
                     subtitle: "\(repo) #\(issue.number) · \(author.login)",
                     body: plainSnippet(bodyText.isEmpty ? issue.title : bodyText, limit: 140)
                 )
@@ -368,6 +416,11 @@ final class AppState: ObservableObject {
             }
             chats[id] = chat
             store.indexChat(chat, body: bodyText)
+            // Fresh PRs get their plain-English summary immediately (needs a key).
+            if chat.isPullRequest, genuinelyNew {
+                let newID = id
+                Task { self.ensureTranslated(chatID: newID) }
+            }
             return notification
         }
     }
@@ -416,12 +469,18 @@ final class AppState: ObservableObject {
 
     private func chatOpened(_ id: String) {
         guard let chat = chats[id] else { return }
+        // Keep the sidebar tab in step (search results and notifications can
+        // open a chat from the other tab).
+        sidebarTab = chat.isPullRequest ? .prs : .issues
         if transcripts[id] == nil, let cached = store.loadTranscript(chat) {
             transcripts[id] = cached
         }
         Task { await refreshTranscript(chatID: id) }
         markRead(id)
         Notifier.shared.clearDelivered(for: id)
+        if chat.isPullRequest {
+            ensureTranslated(chatID: id)
+        }
     }
 
     func refreshTranscript(chatID: String, quiet: Bool = false) async {
@@ -837,6 +896,69 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: - PR translation
+
+    /// Make sure a PR has a plain-English summary: load the stored one, or
+    /// (when an AI key is configured) generate and persist it.
+    func ensureTranslated(chatID: String, force: Bool = false) {
+        guard let chat = chats[chatID], chat.isPullRequest else { return }
+        if !force {
+            switch translations[chatID] {
+            case .done, .loading: return
+            default: break
+            }
+            if let stored = store.loadTranslation(chat) {
+                translations[chatID] = .done(stored)
+                return
+            }
+        }
+        guard hasAIKey else { return }
+        Task { await self.translateNow(chatID: chatID) }
+    }
+
+    /// Run one translation to completion. Returns false on provider failure
+    /// (caller can back off).
+    @discardableResult
+    private func translateNow(chatID: String) async -> Bool {
+        guard let api, let chat = chats[chatID], chat.isPullRequest else { return false }
+        if case .loading = translations[chatID] { return true }   // already in flight
+        translations[chatID] = .loading
+        do {
+            let body: String
+            if let b = transcripts[chatID]?.first(where: { $0.id == "body" })?.body, !b.isEmpty {
+                body = b
+            } else if let issue = try? await api.issue(chat.repoFullName, chat.number) {
+                body = issue.body ?? ""
+            } else {
+                body = chat.lastMessageSnippet
+            }
+            let files = (try? await api.pullFiles(chat.repoFullName, chat.number)) ?? []
+            let prompt = AITranslator.buildPrompt(chat: chat, body: body, files: files)
+            let text = try await AITranslator.shared.translate(prompt: prompt, config: aiConfig)
+            let stored = StoredTranslation(text: text, createdAt: Date(), model: aiConfig.resolvedModel)
+            translations[chatID] = .done(stored)
+            if let current = chats[chatID] {
+                store.saveTranslation(current, stored)
+            }
+            gclog("translated PR \(chatID)")
+            return true
+        } catch {
+            translations[chatID] = .failed(error.localizedDescription)
+            gclog("translation failed for \(chatID): \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// Flip a PR chat between the summary view (default) and the raw conversation.
+    func togglePRView(chatID: String) {
+        if showRawPR.contains(chatID) {
+            showRawPR.remove(chatID)
+            ensureTranslated(chatID: chatID)
+        } else {
+            showRawPR.insert(chatID)
+        }
+    }
+
     func windowFocusChanged(isKey: Bool) {
         windowIsKey = isKey
         if isKey, let id = selectedChatID { markRead(id) }
@@ -853,12 +975,14 @@ final class AppState: ObservableObject {
     }
 
     func pinnedChats() -> [Chat] {
-        chats.values
-            .filter { $0.pinned && !$0.ignored }
+        let wantPR = sidebarTab == .prs
+        return chats.values
+            .filter { $0.pinned && !$0.ignored && $0.isPullRequest == wantPR }
             .sorted { $0.lastMessageAt > $1.lastMessageAt }
     }
 
     func rows() -> [ChatRowModel] {
+        let wantPR = sidebarTab == .prs
         var list: [Chat]
         switch filter {
         case .all:
@@ -873,8 +997,16 @@ final class AppState: ObservableObject {
             list = chats.values.filter { $0.ignored }
         }
         return list
+            .filter { $0.isPullRequest == wantPR }
             .sorted { $0.lastMessageAt > $1.lastMessageAt }
             .map { ChatRowModel(chat: $0) }
+    }
+
+    func unreadCount(for tab: SidebarTab) -> Int {
+        let wantPR = tab == .prs
+        return chats.values.filter {
+            !$0.ignored && $0.unreadCount > 0 && $0.isPullRequest == wantPR
+        }.count
     }
 
     // MARK: - Search
