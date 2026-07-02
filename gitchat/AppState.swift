@@ -61,7 +61,9 @@ final class AppState: ObservableObject {
         var chatID: String
         var messageID: String
     }
-    @Published var drafts: [String: String] = [:]
+    // Not @Published on purpose: publishing per-keystroke re-rendered the
+    // whole window. The composer keeps its own @State and syncs here.
+    var drafts: [String: String] = [:]
 
     var onUnreadChanged: ((Int) -> Void)?
     var onShowWindow: (() -> Void)?

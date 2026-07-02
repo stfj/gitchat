@@ -180,7 +180,7 @@ struct ImageLightboxView: View {
                 .contentShape(Rectangle())
                 .onTapGesture { onClose() }
 
-            RemoteImage(url: url, contentMode: .fit) {
+            RemoteImage(url: url, contentMode: .fit, maxPixel: nil) {
                 ProgressView()
                     .controlSize(.large)
                     .tint(.white)

@@ -16,6 +16,7 @@ struct RootView: View {
             }
         }
         .frame(minWidth: 820, minHeight: 480)
+        .environment(\.appStateRef, app)
         .overlay {
             if let url = app.previewImageURL {
                 ImageLightboxView(url: url) { app.previewImageURL = nil }

@@ -64,8 +64,18 @@ enum MarkdownParser {
                 blocks += parseBlocks(part)
             }
         }
-        blockCache.setObject(ParseBox(blocks), forKey: text as NSString)
-        return blocks
+        // Coalesce consecutive paragraphs: each becomes one NSTextView in the
+        // bubble, and fewer AppKit views = smoother scrolling in long threads.
+        var merged: [MarkdownBlock] = []
+        for block in blocks {
+            if case .paragraph(let s) = block, case .some(.paragraph(let prev)) = merged.last {
+                merged[merged.count - 1] = .paragraph(prev + "\n\n" + s)
+            } else {
+                merged.append(block)
+            }
+        }
+        blockCache.setObject(ParseBox(merged), forKey: text as NSString)
+        return merged
     }
 
     private static let headingRe = #/^(#{1,6})\s+(.+)$/#
@@ -312,16 +322,23 @@ struct SelectableMessageText: NSViewRepresentable {
         view.actions = actions
     }
 
+    @MainActor private static let sizeCache = NSCache<NSString, ParseBox<CGSize>>()
+
     func sizeThatFits(_ proposal: ProposedViewSize, nsView view: MessageTextNSView, context: Context) -> CGSize? {
         var width = proposal.width ?? 456
         if !width.isFinite || width < 20 { width = 456 }
-        // Measure the string directly — container-free and reliably tight.
+        // Attributed strings come from a cache, so identity + width is a stable
+        // key; measuring long strings on every layout pass showed up in scroll.
+        let key = "\(UInt(bitPattern: ObjectIdentifier(attributed).hashValue))|\(Int(width.rounded()))" as NSString
+        if let hit = Self.sizeCache.object(forKey: key) { return hit.value }
         let bounds = attributed.boundingRect(
             with: NSSize(width: width, height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading]
         )
-        return CGSize(width: min(width, max(bounds.width.rounded(.up) + 1, 2)),
-                      height: max(bounds.height.rounded(.up), 2))
+        let size = CGSize(width: min(width, max(bounds.width.rounded(.up) + 1, 2)),
+                          height: max(bounds.height.rounded(.up), 2))
+        Self.sizeCache.setObject(ParseBox(size), forKey: key)
+        return size
     }
 }
 

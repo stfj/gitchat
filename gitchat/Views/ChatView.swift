@@ -167,8 +167,9 @@ struct TranscriptView: View {
         // bubbles past the transcript and pans the whole window's content.
         // defaultScrollAnchor keeps the log pinned to the newest message, and
         // the declarative scrollPosition binding handles jump-to-message.
+        let myLogin = app.me?.login
         ScrollView {
-            VStack(alignment: .leading, spacing: 2) {
+            LazyVStack(alignment: .leading, spacing: 2) {
                 if stillLoading {
                     HStack {
                         Spacer()
@@ -182,7 +183,15 @@ struct TranscriptView: View {
                     case .day(let label):
                         DaySeparator(label: label)
                     case .message(let message, let showHeader):
-                        MessageBubbleRow(chatID: chatID, message: message, showHeader: showHeader)
+                        MessageBubbleRow(
+                            chatID: chatID,
+                            message: message,
+                            showHeader: showHeader,
+                            isMine: message.author.login == myLogin,
+                            isHighlighted: app.highlightedMessageID == message.id,
+                            isEditing: app.editingMessage == AppState.EditingTarget(chatID: chatID, messageID: message.id)
+                        )
+                        .equatable()
                     }
                 }
             }
@@ -209,17 +218,37 @@ struct TranscriptView: View {
 
 // MARK: - Bubbles
 
-struct MessageBubbleRow: View {
-    @EnvironmentObject var app: AppState
+// Non-observing handle to AppState: rows can trigger actions without
+// subscribing to every published change (that subscription made all rows
+// re-render on each keystroke/sync tick — the scroll chunkiness).
+private struct AppStateRefKey: EnvironmentKey {
+    static let defaultValue: AppState? = nil
+}
+
+extension EnvironmentValues {
+    var appStateRef: AppState? {
+        get { self[AppStateRefKey.self] }
+        set { self[AppStateRefKey.self] = newValue }
+    }
+}
+
+struct MessageBubbleRow: View, Equatable {
     let chatID: String
     let message: Message
     let showHeader: Bool
+    let isMine: Bool
+    let isHighlighted: Bool
+    let isEditing: Bool
+    @Environment(\.appStateRef) private var appRef
     @State private var showDeleteConfirm = false
 
-    private var isMine: Bool { message.author.login == app.me?.login }
-
-    private var isEditingThis: Bool {
-        app.editingMessage == AppState.EditingTarget(chatID: chatID, messageID: message.id)
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.chatID == rhs.chatID
+            && lhs.message == rhs.message
+            && lhs.showHeader == rhs.showHeader
+            && lhs.isMine == rhs.isMine
+            && lhs.isHighlighted == rhs.isHighlighted
+            && lhs.isEditing == rhs.isEditing
     }
 
     /// Same actions as the bubble's context menu, merged into the selectable
@@ -227,17 +256,18 @@ struct MessageBubbleRow: View {
     private var menuActions: MessageMenuActions {
         let editable = isMine && !message.pending && !message.failed
         var actions = MessageMenuActions()
+        let msg = message
+        let chat = chatID
+        let ref = appRef
         if editable {
-            let msg = message
-            actions.onEdit = { app.beginEdit(chatID: chatID, message: msg) }
+            actions.onEdit = { ref?.beginEdit(chatID: chat, message: msg) }
             if message.commentID != nil {
                 actions.onDelete = { showDeleteConfirm = true }
             }
         }
-        let body = message.body
         actions.onCopyAll = {
             NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(body, forType: .string)
+            NSPasteboard.general.setString(msg.body, forType: .string)
         }
         if let urlString = message.htmlURL, let url = URL(string: urlString) {
             actions.onOpenGitHub = { NSWorkspace.shared.open(url) }
@@ -250,7 +280,7 @@ struct MessageBubbleRow: View {
             if isMine {
                 Spacer(minLength: 90)
                 VStack(alignment: .trailing, spacing: 2) {
-                    if isEditingThis {
+                    if isEditing {
                         MessageEditView()
                     } else {
                         bubble(alignRight: true)
@@ -288,14 +318,14 @@ struct MessageBubbleRow: View {
 
     private func bubble(alignRight: Bool) -> some View {
         BubbleContent(message: message, isMine: isMine,
-                      highlighted: app.highlightedMessageID == message.id,
+                      highlighted: isHighlighted,
                       actions: menuActions)
-            .animation(.easeInOut(duration: 0.3), value: app.highlightedMessageID)
+            .animation(.easeInOut(duration: 0.3), value: isHighlighted)
             .frame(maxWidth: .infinity, alignment: alignRight ? .trailing : .leading)
             .help(Formatters.full.string(from: message.createdAt))
             .contextMenu {
                 if isMine, !message.pending, !message.failed {
-                    Button("Edit Message") { app.beginEdit(chatID: chatID, message: message) }
+                    Button("Edit Message") { appRef?.beginEdit(chatID: chatID, message: message) }
                     if message.commentID != nil {
                         Button("Delete Message…", role: .destructive) { showDeleteConfirm = true }
                     }
@@ -311,7 +341,7 @@ struct MessageBubbleRow: View {
             }
             .confirmationDialog("Delete this message?", isPresented: $showDeleteConfirm) {
                 Button("Delete", role: .destructive) {
-                    app.deleteMessage(chatID: chatID, messageID: message.id)
+                    appRef?.deleteMessage(chatID: chatID, messageID: message.id)
                 }
             } message: {
                 Text("This removes the comment from GitHub for everyone. There's no undo.")
@@ -320,7 +350,7 @@ struct MessageBubbleRow: View {
 
     private var failedRow: some View {
         Button {
-            app.retryMessage(chatID: chatID, messageID: message.id)
+            appRef?.retryMessage(chatID: chatID, messageID: message.id)
         } label: {
             Label("Not delivered — click to retry", systemImage: "exclamationmark.circle.fill")
                 .font(.system(size: 11))
@@ -463,20 +493,14 @@ struct ComposerView: View {
     @EnvironmentObject var app: AppState
     let chatID: String
     @StateObject private var bin = AttachmentBin()
+    @State private var draft = ""
     @State private var dropTargeted = false
     @State private var mentionSelection = 0
     @State private var mentionDismissed = false
     @FocusState private var focused: Bool
 
-    private var draft: Binding<String> {
-        Binding(
-            get: { app.drafts[chatID] ?? "" },
-            set: { app.drafts[chatID] = $0 }
-        )
-    }
-
     private var canSend: Bool {
-        let hasText = !(app.drafts[chatID] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasText = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return (hasText || bin.hasUploads) && !bin.uploadsInFlight
     }
 
@@ -485,11 +509,10 @@ struct ComposerView: View {
     // which is where chat typing happens anyway.)
     private var mentionQuery: String? {
         guard !mentionDismissed else { return nil }
-        let text = app.drafts[chatID] ?? ""
-        guard let r = text.range(of: "(?<=^|[\\s(])@([A-Za-z0-9-]{0,39})$", options: .regularExpression) else {
+        guard let r = draft.range(of: "(?<=^|[\\s(])@([A-Za-z0-9-]{0,39})$", options: .regularExpression) else {
             return nil
         }
-        return String(text[r].dropFirst())
+        return String(draft[r].dropFirst())
     }
 
     private var mentionMatches: [GHUserRef] {
@@ -518,7 +541,7 @@ struct ComposerView: View {
                 .padding(.bottom, 3)
                 .help("Attach an image (or drag one in)")
 
-                TextField("Message", text: draft, axis: .vertical)
+                TextField("Message", text: $draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
                     .lineLimit(1...8)
@@ -584,9 +607,11 @@ struct ComposerView: View {
         }
         .onAppear {
             focused = true
+            draft = app.drafts[chatID] ?? ""
             bin.repoFullName = app.chats[chatID]?.repoFullName
         }
-        .onChange(of: app.drafts[chatID] ?? "") { _, _ in
+        .onChange(of: draft) { _, newValue in
+            app.drafts[chatID] = newValue
             mentionDismissed = false
             mentionSelection = 0
         }
