@@ -751,7 +751,9 @@ struct ComposerView: View {
             }
         }
         .onAppear {
-            focused = true
+            // No focus grab here: ChatView is rebuilt per selection, so an
+            // onAppear focus steals first responder from the sidebar list on
+            // every arrow-key move. Clicking the field focuses it natively.
             draft = app.drafts[chatID] ?? ""
             bin.repoFullName = app.chats[chatID]?.repoFullName
         }
@@ -774,10 +776,12 @@ struct ComposerView: View {
     }
 
     private func acceptMention(_ user: GHUserRef) {
-        var text = app.drafts[chatID] ?? ""
+        // Mutate the LOCAL draft — the TextField binds to it; app.drafts is a
+        // write-through copy that never flows back into the field.
+        var text = draft
         if let r = text.range(of: "(?<=^|[\\s(])@[A-Za-z0-9-]{0,39}$", options: .regularExpression) {
             text.replaceSubrange(r, with: "@\(user.login) ")
-            app.drafts[chatID] = text
+            draft = text
         }
     }
 
@@ -819,9 +823,12 @@ struct ComposerView: View {
 
     private func send() {
         guard canSend else { return }
-        let text = app.drafts[chatID] ?? ""
+        let text = draft
         let attachments = bin.items
         bin.clear()
+        // Clear the LOCAL draft — that's what the TextField shows. (onChange
+        // mirrors it into app.drafts; the explicit write covers teardown races.)
+        draft = ""
         app.drafts[chatID] = ""
         NSSound(named: "Pop")?.play()
         app.sendMessage(chatID: chatID, text: text, attachments: attachments)

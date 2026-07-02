@@ -135,6 +135,9 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        // Separate list identity per tab — sharing one list makes the tabs
+        // share (and slowly drift) a single scroll offset when toggling.
+        .id(app.sidebarTab)
     }
 
     private var searchList: some View {

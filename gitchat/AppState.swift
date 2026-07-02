@@ -167,6 +167,44 @@ final class AppState: ObservableObject {
                 }
             }
         }
+        // Focus harness: focuses the sidebar list, then walks the selection
+        // like arrow keys would, logging the first responder each step —
+        // focus-stealing shows up as the responder class changing.
+        if ProcessInfo.processInfo.environment["GITCHAT_DEBUG_FOCUS"] != nil {
+            Task {
+                try? await Task.sleep(for: .seconds(3))
+                onShowWindow?()
+                NSApp.activate(ignoringOtherApps: true)
+                try? await Task.sleep(for: .seconds(1.5))
+                guard let window = NSApp.windows.first(where: {
+                    !String(describing: type(of: $0)).contains("StatusBar") && $0.frame.width > 400
+                }) else {
+                    gclog("focus harness: no main window")
+                    return
+                }
+                window.makeKeyAndOrderFront(nil)
+                try? await Task.sleep(for: .seconds(1))
+                let start = window.firstResponder
+                gclog("focus harness: start responder = \(start.map { String(describing: type(of: $0)) } ?? "nil")")
+                func describeResponder(_ fr: NSResponder?) -> String {
+                    guard let fr else { return "nil" }
+                    var detail = String(describing: type(of: fr))
+                    if let tv = fr as? NSTextView, let d = tv.delegate {
+                        detail += " → \(String(describing: type(of: d)))"
+                        if let tf = d as? NSTextField {
+                            detail += " placeholder='\(tf.placeholderString ?? "")'"
+                        }
+                    }
+                    return detail
+                }
+                let ids = self.rows().map(\.chat.id).prefix(4)
+                for id in ids {
+                    self.selectedChatID = id
+                    try? await Task.sleep(for: .seconds(1.5))
+                    gclog("focus after select \(id): \(describeResponder(window.firstResponder))")
+                }
+            }
+        }
     }
 
     func signOut() {
