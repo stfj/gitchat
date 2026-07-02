@@ -136,6 +136,13 @@ func gclog(_ s: String) {
 /// Markdown → single-line human snippet for chat rows and notifications.
 func plainSnippet(_ markdown: String, limit: Int = 240) -> String {
     var s = markdown
+    // Issue templates open bodies with a "Description" heading — boilerplate
+    // that wastes the preview. Drop it when it's a line of its own.
+    s = s.replacingOccurrences(
+        of: "^\\s*(?:#{1,6}\\s*|\\*\\*)?(?:Description|Describe the bug)(?:\\*\\*)?\\s*:?\\s*(\\r?\\n)+",
+        with: "",
+        options: [.regularExpression, .caseInsensitive]
+    )
     s = s.replacingOccurrences(of: "```[^\\n]*", with: " ", options: .regularExpression)
     s = s.replacingOccurrences(of: "!\\[[^\\]]*\\]\\([^)]*\\)", with: "📷", options: .regularExpression)
     s = s.replacingOccurrences(of: "\\[([^\\]]*)\\]\\([^)]*\\)", with: "$1", options: .regularExpression)
@@ -145,6 +152,18 @@ func plainSnippet(_ markdown: String, limit: Int = 240) -> String {
     s = s.trimmingCharacters(in: .whitespacesAndNewlines)
     if s.count > limit { s = String(s.prefix(limit)) + "…" }
     return s
+}
+
+/// Display-time preview cleanup: drops a leading "Description" word left over
+/// from template headings (covers snippets cached before the rule above, and
+/// headings flattened without a newline).
+func previewSnippet(_ snippet: String) -> String {
+    let cleaned = snippet.replacingOccurrences(
+        of: "^Description[:\\s]+",
+        with: "",
+        options: [.regularExpression, .caseInsensitive]
+    )
+    return cleaned.isEmpty ? snippet : cleaned
 }
 
 extension Date {

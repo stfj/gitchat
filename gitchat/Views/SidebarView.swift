@@ -263,6 +263,6 @@ struct ChatRowView: View {
     private var snippetLine: String {
         if let match = row.matchSnippet { return match }
         let mine = chat.lastMessageAuthor?.login == app.me?.login
-        return (mine ? "You: " : "") + chat.lastMessageSnippet
+        return (mine ? "You: " : "") + previewSnippet(chat.lastMessageSnippet)
     }
 }
