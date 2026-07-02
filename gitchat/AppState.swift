@@ -50,6 +50,8 @@ final class AppState: ObservableObject {
     @Published var previewImageURL: String?
     @Published var jumpTarget: MessageJump?
     @Published var highlightedMessageID: String?
+    @Published var webLoginVisible = false
+    @Published var webSessionActive = false
     @Published var transcriptLoading: Set<String> = []
     @Published var drafts: [String: String] = [:]
 
@@ -111,6 +113,7 @@ final class AppState: ObservableObject {
         Notifier.shared.configure()
         gclog("signed in as \(creds.login); \(chats.count) cached chats")
         Task { await store.buildSearchIndex(chats: chats) }
+        Task { self.webSessionActive = await WebSession.shared.hasSession() }
         startSyncLoop()
         if ProcessInfo.processInfo.environment["GITCHAT_DEBUG_GEO"] != nil {
             Task {
@@ -360,6 +363,7 @@ final class AppState: ObservableObject {
             info.canPush = r.permissions?.push ?? info.canPush
             info.pushedAt = r.pushedAt ?? info.pushedAt
             info.ownerAvatarURL = r.owner?.avatarUrl ?? info.ownerAvatarURL
+            info.repoID = r.id ?? info.repoID
             map[r.fullName] = info
         }
         repos = Array(map.values)
@@ -507,10 +511,49 @@ final class AppState: ObservableObject {
         sendMessage(chatID: chatID, text: body, attachments: [])
     }
 
-    func upload(data: Data, fileName: String) async throws -> String {
+    /// Upload an image, private-first: GitHub's own attachment host (scoped to
+    /// the repo's visibility) when enabled, else the legacy public assets repo.
+    func upload(data: Data, fileName: String, repoFullName: String?) async throws -> String {
         guard let engine else { throw APIError.unauthorized }
-        return try await engine.uploadImage(data: data, fileName: fileName,
-                                            assetsRepo: settings.assetsRepoName)
+
+        let canUsePrivate = settings.privateAttachments
+            && settings.apiBase == "https://api.github.com"   // web flow is github.com-only
+        guard canUsePrivate else {
+            return try await engine.uploadImage(data: data, fileName: fileName,
+                                                assetsRepo: settings.assetsRepoName)
+        }
+
+        guard let repoFullName else { throw AttachmentError.needsRepo }
+        guard let cookieHeader = await WebSession.shared.cookieHeader() else {
+            webSessionActive = false
+            webLoginVisible = true   // pop the sign-in sheet; user retries after
+            throw AttachmentError.needsWebLogin
+        }
+        let repoID = try await repoID(for: repoFullName)
+        let ext = (fileName as NSString).pathExtension
+        let href = try await UserAttachmentUploader.shared.upload(
+            data: data,
+            fileName: fileName,
+            contentType: UserAttachmentUploader.contentType(forExtension: ext),
+            repoFullName: repoFullName,
+            repositoryID: repoID,
+            cookieHeader: cookieHeader
+        )
+        webSessionActive = true
+        return href
+    }
+
+    private func repoID(for fullName: String) async throws -> Int {
+        if let cached = repos.first(where: { $0.fullName == fullName })?.repoID {
+            return cached
+        }
+        guard let api else { throw APIError.unauthorized }
+        let info = try await api.repoInfo(fullName)
+        guard let id = info.id else { throw APIError.http(500, "repository id unavailable") }
+        if let i = repos.firstIndex(where: { $0.fullName == fullName }) {
+            repos[i].repoID = id
+        }
+        return id
     }
 
     // MARK: - New issues

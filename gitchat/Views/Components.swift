@@ -9,6 +9,9 @@ import UniformTypeIdentifiers
 final class AttachmentBin: ObservableObject {
     @Published var items: [PendingAttachment] = []
 
+    /// Target repo for uploads (GitHub's attachment host scopes assets to a repo).
+    var repoFullName: String?
+
     var uploadsInFlight: Bool {
         items.contains { if case .uploading = $0.state { true } else { false } }
     }
@@ -50,11 +53,17 @@ final class AttachmentBin: ObservableObject {
         let attachment = PendingAttachment(fileName: name, thumbnail: NSImage(data: data), state: .uploading)
         items.append(attachment)
         let id = attachment.id
+        let repo = repoFullName
         Task {
             do {
-                let url = try await app.upload(data: data, fileName: name)
+                let url = try await app.upload(data: data, fileName: name, repoFullName: repo)
                 if let i = self.items.firstIndex(where: { $0.id == id }) {
                     self.items[i].state = .uploaded(url)
+                    // Private attachment URLs need a web session to fetch; show
+                    // the local image instantly instead.
+                    if let thumb = self.items[i].thumbnail {
+                        ImageLoader.shared.prime(thumb, for: url)
+                    }
                 }
             } catch {
                 if let i = self.items.firstIndex(where: { $0.id == id }) {

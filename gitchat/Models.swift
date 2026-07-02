@@ -72,6 +72,7 @@ struct RepoInfo: Codable, Hashable, Identifiable {
     var pushedAt: Date?
     var lastIssueSync: Date?
     var ownerAvatarURL: String?
+    var repoID: Int?          // numeric GitHub id (needed for attachment uploads)
     var id: String { fullName }
 }
 
@@ -123,6 +124,7 @@ struct AppSettings: Codable {
     var historyDays: Int = 30
     var includePullRequests: Bool = false
     var showClosed: Bool = false
+    var privateAttachments: Bool = true   // GitHub's own attachment host (repo-visibility scoped)
     var assetsRepoName: String = "gitchat-assets"
     var apiBase: String = "https://api.github.com"
     var notificationsEnabled: Bool = true
@@ -134,6 +136,7 @@ struct AppSettings: Codable {
         historyDays = try c.decodeIfPresent(Int.self, forKey: .historyDays) ?? 30
         includePullRequests = try c.decodeIfPresent(Bool.self, forKey: .includePullRequests) ?? false
         showClosed = try c.decodeIfPresent(Bool.self, forKey: .showClosed) ?? false
+        privateAttachments = try c.decodeIfPresent(Bool.self, forKey: .privateAttachments) ?? true
         assetsRepoName = try c.decodeIfPresent(String.self, forKey: .assetsRepoName) ?? "gitchat-assets"
         apiBase = try c.decodeIfPresent(String.self, forKey: .apiBase) ?? "https://api.github.com"
         notificationsEnabled = try c.decodeIfPresent(Bool.self, forKey: .notificationsEnabled) ?? true

@@ -4,6 +4,7 @@ import ServiceManagement
 struct SettingsView: View {
     @EnvironmentObject var app: AppState
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var webLoginShowing = false
 
     var body: some View {
         Form {
@@ -42,10 +43,34 @@ struct SettingsView: View {
             }
 
             Section("Image attachments") {
-                TextField("Attachments repo name", text: $app.settings.assetsRepoName)
-                Text("Dragged-in images are committed to github.com/\(app.me?.login ?? "you")/\(app.settings.assetsRepoName) — a public repo created on first use — so they render on GitHub too.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                Toggle("Upload privately to GitHub's attachment storage", isOn: $app.settings.privateAttachments)
+                if app.settings.privateAttachments {
+                    HStack {
+                        Image(systemName: app.webSessionActive ? "checkmark.circle.fill" : "person.crop.circle.badge.questionmark")
+                            .foregroundStyle(app.webSessionActive ? Color.green : Color.secondary)
+                        Text(app.webSessionActive ? "GitHub web session active" : "Needs a one-time GitHub sign-in")
+                            .font(.system(size: 12))
+                        Spacer()
+                        if app.webSessionActive {
+                            Button("Sign Out") {
+                                Task {
+                                    await WebSession.shared.signOut()
+                                    app.webSessionActive = false
+                                }
+                            }
+                        } else {
+                            Button("Sign In…") { webLoginShowing = true }
+                        }
+                    }
+                    Text("Images land at github.com/user-attachments — the same place the GitHub website puts them — and stay as private as the repo they're posted to.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                } else {
+                    TextField("Attachments repo name", text: $app.settings.assetsRepoName)
+                    Text("Legacy mode: images are committed to github.com/\(app.me?.login ?? "you")/\(app.settings.assetsRepoName) — a PUBLIC repo created on first use.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section("App") {
@@ -67,6 +92,9 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 480, height: 560)
+        .frame(width: 480, height: 600)
+        .sheet(isPresented: $webLoginShowing) {
+            GitHubLoginSheet().environmentObject(app)
+        }
     }
 }

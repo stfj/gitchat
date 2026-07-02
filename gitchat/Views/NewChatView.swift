@@ -90,12 +90,16 @@ struct NewChatView: View {
         }
         .padding(18)
         .frame(width: 580)
+        .sheet(isPresented: $app.webLoginVisible) {
+            GitHubLoginSheet().environmentObject(app)
+        }
         .onChange(of: repo?.fullName) { _, newValue in
             pickedLabels = []
             pickedAssignees = []
             labelFilter = ""
             repoLabels = []
             repoAssignees = []
+            bin.repoFullName = newValue
             guard let newValue else { return }
             Task {
                 let meta = await app.fetchRepoMeta(newValue)

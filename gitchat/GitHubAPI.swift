@@ -72,6 +72,7 @@ struct GHRepo: Codable {
         var push: Bool?
         var admin: Bool?
     }
+    var id: Int?
     var fullName: String
     var owner: GHUser?
     var isPrivate: Bool?
@@ -81,7 +82,7 @@ struct GHRepo: Codable {
     var permissions: Perms?
 
     enum CodingKeys: String, CodingKey {
-        case fullName, owner, hasIssues, archived, pushedAt, permissions
+        case id, fullName, owner, hasIssues, archived, pushedAt, permissions
         case isPrivate = "private"
     }
 }

@@ -35,10 +35,13 @@ issue you can see on GitHub as an iMessage-style conversation.
   scrolls to that exact message, and flashes a highlight ring on it.
 - **Images** in conversations render inline; click one and it scales up into an
   in-window viewer (click anywhere, the ✕, or Esc to close; right-click for
-  "Open in Browser"). Dragged-in
-  images upload to a public `<you>/gitchat-assets` repo (created on first use)
-  so they render on GitHub too — the API has no way to push to GitHub's own
-  attachment host. Repo name is configurable in Settings.
+  "Open in Browser"). Dragged-in images upload to **GitHub's own attachment
+  storage** (`github.com/user-attachments`) — the same place the website puts
+  them, so they stay as private as the repo they're posted to. GitHub has no
+  token API for that host, so this rides a one-time in-app web sign-in (WebKit
+  sheet; the session lives in the app's own cookie store and is kept fresh by
+  use). A legacy fallback that commits images to a public
+  `<you>/gitchat-assets` repo can be re-enabled in Settings.
 - **Open in Safari** button in every chat jumps to the issue on github.com.
 - Close/reopen issues, mark unread, launch at login, GitHub Enterprise base URL.
 

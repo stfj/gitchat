@@ -31,6 +31,14 @@ struct RootView: View {
         .sheet(isPresented: $app.composeVisible) {
             NewChatView().environmentObject(app)
         }
+        // When the compose sheet is up, its own login sheet handles this instead
+        // (only one sheet can hang off the root at a time).
+        .sheet(isPresented: Binding(
+            get: { app.webLoginVisible && !app.composeVisible },
+            set: { if !$0 { app.webLoginVisible = false } }
+        )) {
+            GitHubLoginSheet().environmentObject(app)
+        }
     }
 
     private var errorShowing: Binding<Bool> {

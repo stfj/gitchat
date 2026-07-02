@@ -494,7 +494,10 @@ struct ComposerView: View {
                     .allowsHitTesting(false)
             }
         }
-        .onAppear { focused = true }
+        .onAppear {
+            focused = true
+            bin.repoFullName = app.chats[chatID]?.repoFullName
+        }
         .onChange(of: app.drafts[chatID] ?? "") { _, _ in
             mentionDismissed = false
             mentionSelection = 0

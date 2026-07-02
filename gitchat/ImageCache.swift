@@ -23,9 +23,16 @@ final class ImageLoader {
         if let hit = cache.object(forKey: urlString as NSString) { return hit }
         if let running = inflight[urlString] { return await running.value }
         let sess = session
+        // Private user-attachments are session-gated; ride the in-app web login.
+        let needsCookies = urlString.hasPrefix("https://github.com/user-attachments")
         let task = Task<NSImage?, Never> {
-            guard let url = URL(string: urlString),
-                  let (data, _) = try? await sess.data(from: url) else { return nil }
+            guard let url = URL(string: urlString) else { return nil }
+            var request = URLRequest(url: url)
+            if needsCookies, let header = await WebSession.shared.cookieHeader() {
+                request.setValue(header, forHTTPHeaderField: "Cookie")
+                request.setValue(WebSession.userAgent, forHTTPHeaderField: "User-Agent")
+            }
+            guard let (data, _) = try? await sess.data(for: request) else { return nil }
             return NSImage(data: data)
         }
         inflight[urlString] = task
@@ -33,6 +40,11 @@ final class ImageLoader {
         inflight[urlString] = nil
         if let img { cache.setObject(img, forKey: urlString as NSString) }
         return img
+    }
+
+    /// Seed the cache (e.g. show the just-uploaded local image under its final URL).
+    func prime(_ image: NSImage, for urlString: String) {
+        cache.setObject(image, forKey: urlString as NSString)
     }
 }
 
