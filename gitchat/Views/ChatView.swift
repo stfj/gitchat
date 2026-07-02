@@ -225,6 +225,12 @@ struct MessageBubbleRow: View {
                     bubble(alignRight: true)
                     if message.failed { failedRow }
                 }
+                if showHeader {
+                    AvatarView(user: message.author, size: 28)
+                        .padding(.bottom, 1)
+                } else {
+                    Color.clear.frame(width: 28, height: 1)
+                }
             } else {
                 if showHeader {
                     AvatarView(user: message.author, size: 28)
@@ -310,7 +316,7 @@ struct BubbleContent: View {
             }
         }
         .tint(isMine ? Color.white : bubbleLinkColor)   // links: readable on both bubble grays
-        .frame(maxWidth: 480, alignment: .leading)
+        .frame(maxWidth: 480, alignment: isMine ? .trailing : .leading)
     }
 
     private var bubbleBlue: LinearGradient {
