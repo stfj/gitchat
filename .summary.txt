@@ -1,0 +1,50 @@
+gitchat — Project Summary
+=========================
+
+WHAT IT IS
+----------
+A working native macOS menu bar app that presents GitHub issues as
+iMessage-style chats. Built 2026-07-01 (Swift/SwiftUI + AppKit shell,
+Xcode project, bundle id stfj.net.gitchat). Verified against the real
+GitHub API with the stfj account: 78 issues across 5 repos synced,
+notifications and unread badges confirmed working.
+
+HOW IT WORKS
+--------------------
+Sign in with a GitHub token (one click via the gh CLI, or paste a PAT).
+A menu bar bubble icon shows the count of unread chats, Dropbox-style;
+left-click opens a Messages-style window (sidebar of chats with pinned
+grid up top, chat bubbles for issue body + comments, composer that posts
+real GitHub comments). Pin/ignore per chat, ⌘F full-text search, ⌘N new
+issue with repo picker (sorted by recent chat activity) + labels +
+assignees + drag-in images, Safari button per chat, notifications with
+inline reply for non-ignored chats.
+
+Sync: a cheap GET /issues?filter=all "firehose" every minute (semantics
+live-verified: returns issues across all member-org repos), plus a
+round-robin per-repo sweep and background transcript backfill. First
+sync arrives marked read (no notification storm). Cache is plain JSON in
+~/Library/Application Support/gitchat (delete to reset). Token stored as
+a 0600 file there, NOT the Keychain (dev re-signing breaks Keychain
+ACLs). Dragged images upload to a public <login>/gitchat-assets repo
+because the API can't push to GitHub's own attachment host. App Sandbox
+is OFF (needed for network + gh CLI detection). Dev hook: GITCHAT_TOKEN
+env var = transient sign-in for testing.
+
+WHAT'S IN THE FOLDER
+--------------------
+- gitchat.xcodeproj — build with:
+  xcodebuild -project gitchat.xcodeproj -scheme gitchat -derivedDataPath build
+- gitchat/ — sources: main.swift, AppDelegate (status item/windows/menu),
+  AppState (sync loop + actions), SyncEngine, GitHubAPI, Store,
+  Credentials, Notifier, ImageCache, Models, Views/ (Sidebar, Chat,
+  NewChat, Login, Settings, Components)
+- scripts/make_icon.swift — regenerates the app icon (green bubble +
+  git-branch glyph) into Assets.xcassets
+- README.md — full feature/build/signin docs
+
+TL;DR
+-----
+Finished, verified macOS menu-bar app that turns GitHub issues into
+iMessage-style chats with replies, pins, ignores, search, notifications,
+and new-issue composing.
