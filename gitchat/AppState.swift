@@ -347,7 +347,12 @@ final class AppState: ObservableObject {
                 transcriptSyncedAt: nil
             )
             var notification: NotificationItem?
-            if !isInitial, author.login != engine.myLogin {
+            // Metadata edits (labels, projects, milestones) bump updated_at and
+            // make OLD issues resurface through the since-filtered sync. Only
+            // issues actually created recently count as new conversations —
+            // everything else arrives silently, already read.
+            let genuinelyNew = issue.createdAt > Date().addingTimeInterval(-86_400)
+            if !isInitial, author.login != engine.myLogin, genuinelyNew {
                 chat.unreadCount = 1
                 notification = NotificationItem(
                     chatID: id,
@@ -355,6 +360,11 @@ final class AppState: ObservableObject {
                     subtitle: "\(repo) #\(issue.number) · \(author.login)",
                     body: plainSnippet(bodyText.isEmpty ? issue.title : bodyText, limit: 140)
                 )
+            }
+            if !genuinelyNew {
+                // Sort by when its conversation actually happened, not by the
+                // metadata bump; transcript backfill refines this shortly.
+                chat.lastMessageAt = issue.createdAt
             }
             chats[id] = chat
             store.indexChat(chat, body: bodyText)
