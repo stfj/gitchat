@@ -16,8 +16,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         wireCallbacks()
         appState.bootstrap()
         // First run: nothing to sign in with yet, so bring up the window.
-        if CredentialsVault.load() == nil {
+        if CredentialsVault.load() == nil || ProcessInfo.processInfo.environment["GITCHAT_DEBUG_GEO"] != nil {
             showMainWindow()
+        }
+        if ProcessInfo.processInfo.environment["GITCHAT_DEBUG_GEO"] != nil, let w = mainWindow {
+            gclog("window h=\(Int(w.frame.height)) contentLayoutRect=\(w.contentLayoutRect) fullSize=\(w.styleMask.contains(.fullSizeContentView))")
         }
     }
 

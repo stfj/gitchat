@@ -111,6 +111,15 @@ final class AppState: ObservableObject {
         gclog("signed in as \(creds.login); \(chats.count) cached chats")
         Task { await store.buildSearchIndex(chats: chats) }
         startSyncLoop()
+        if ProcessInfo.processInfo.environment["GITCHAT_DEBUG_GEO"] != nil {
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                if let longest = self.chats.values.max(by: { $0.title.count < $1.title.count }) {
+                    gclog("debug auto-select longest title (\(longest.title.count) chars): \(longest.id)")
+                    self.selectedChatID = longest.id
+                }
+            }
+        }
     }
 
     func signOut() {

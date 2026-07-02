@@ -225,7 +225,8 @@ struct ChatRowView: View {
                     }
                     Text(chat.title)
                         .font(.system(size: 13, weight: chat.unreadCount > 0 ? .semibold : .regular))
-                        .lineLimit(1)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 6)
                     Text(chat.lastMessageAt.chatStamp)
                         .font(.system(size: 11))

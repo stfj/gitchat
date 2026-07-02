@@ -9,17 +9,78 @@ struct ChatView: View {
     var body: some View {
         if let chat = app.chats[chatID] {
             VStack(spacing: 0) {
-                if !chat.labels.isEmpty || !chat.assignees.isEmpty || !chat.isOpen {
-                    metaBar(chat)
-                    Divider()
-                }
+                chatHeader(chat)
+                Divider()
                 TranscriptView(chatID: chatID)
                 Divider()
                 ComposerView(chatID: chatID)
             }
-            .navigationTitle(chat.title)
-            .navigationSubtitle("\(chat.repoFullName) #\(chat.number)")
+            .navigationTitle("")
+            // Solid toolbar reserves real layout space; the floating overlay
+            // style lets tall (multi-line-title) headers slide underneath it.
+            .toolbarBackground(.visible, for: .windowToolbar)
             .toolbar { chatToolbar(chat) }
+        }
+    }
+
+    /// Full-width header above the transcript: issue titles are long and
+    /// important, and the window toolbar can't fit them.
+    private func chatHeader(_ chat: Chat) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(chat.title)
+                .font(.system(size: 16, weight: .semibold))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 6) {
+                StateDot(isOpen: chat.isOpen)
+                Text("\(chat.repoFullName) #\(chat.number)")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                if !chat.isOpen {
+                    Text("Closed")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6).padding(.vertical, 1.5)
+                        .background(Capsule().fill(Color.purple))
+                }
+                if chat.isPullRequest {
+                    Text("PR")
+                        .font(.system(size: 9, weight: .bold))
+                        .padding(.horizontal, 4).padding(.vertical, 1)
+                        .background(RoundedRectangle(cornerRadius: 3).fill(Color.secondary.opacity(0.18)))
+                }
+            }
+            if !chat.labels.isEmpty || !chat.assignees.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(chat.labels, id: \.self) { LabelChip(tag: $0) }
+                        if !chat.assignees.isEmpty {
+                            if !chat.labels.isEmpty {
+                                Divider().frame(height: 12)
+                            }
+                            ForEach(chat.assignees, id: \.self) { a in
+                                HStack(spacing: 3) {
+                                    AvatarView(user: a, size: 14)
+                                    Text(a.login).font(.system(size: 10))
+                                }
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Capsule().fill(Color.primary.opacity(0.06)))
+                            }
+                        }
+                    }
+                }
+                .padding(.top, 2)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        .onGeometryChange(for: CGRect.self) { proxy in
+            proxy.frame(in: .global)
+        } action: { frame in
+            if ProcessInfo.processInfo.environment["GITCHAT_DEBUG_GEO"] != nil {
+                gclog("chatHeader global frame: y=\(Int(frame.minY)) h=\(Int(frame.height)) w=\(Int(frame.width))")
+            }
         }
     }
 
@@ -62,33 +123,6 @@ struct ChatView: View {
         }
     }
 
-    private func metaBar(_ chat: Chat) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                if !chat.isOpen {
-                    Text("Closed")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 7).padding(.vertical, 2.5)
-                        .background(Capsule().fill(Color.purple))
-                }
-                ForEach(chat.labels, id: \.self) { LabelChip(tag: $0) }
-                if !chat.assignees.isEmpty {
-                    Divider().frame(height: 12)
-                    ForEach(chat.assignees, id: \.self) { a in
-                        HStack(spacing: 3) {
-                            AvatarView(user: a, size: 14)
-                            Text(a.login).font(.system(size: 10))
-                        }
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Capsule().fill(Color.primary.opacity(0.06)))
-                    }
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-        }
-    }
 }
 
 // MARK: - Transcript
@@ -127,40 +161,33 @@ struct TranscriptView: View {
         let messages = app.transcripts[chatID] ?? []
         let stillLoading = app.transcriptLoading.contains(chatID) && messages.isEmpty
 
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    if stillLoading {
-                        HStack {
-                            Spacer()
-                            ProgressView()
-                            Spacer()
-                        }
-                        .padding(.top, 60)
+        // No ScrollViewReader/scrollTo here: on macOS the scroll command
+        // bubbles past the transcript and pans the whole window's content.
+        // defaultScrollAnchor keeps the log pinned to the newest message.
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) {
+                if stillLoading {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
                     }
-                    ForEach(buildTranscriptRows(messages)) { row in
-                        switch row.kind {
-                        case .day(let label):
-                            DaySeparator(label: label)
-                        case .message(let message, let showHeader):
-                            MessageBubbleRow(chatID: chatID, message: message, showHeader: showHeader)
-                        }
-                    }
-                    Color.clear.frame(height: 1).id("bottom-anchor")
+                    .padding(.top, 60)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .onAppear {
-                proxy.scrollTo("bottom-anchor", anchor: .bottom)
-            }
-            .onChange(of: messages.count) { _, _ in
-                withAnimation(.easeOut(duration: 0.15)) {
-                    proxy.scrollTo("bottom-anchor", anchor: .bottom)
+                ForEach(buildTranscriptRows(messages)) { row in
+                    switch row.kind {
+                    case .day(let label):
+                        DaySeparator(label: label)
+                    case .message(let message, let showHeader):
+                        MessageBubbleRow(chatID: chatID, message: message, showHeader: showHeader)
+                    }
                 }
             }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .defaultScrollAnchor(.bottom)
     }
 }
 
