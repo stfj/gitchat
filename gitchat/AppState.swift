@@ -508,8 +508,11 @@ final class AppState: ObservableObject {
     private func chatOpened(_ id: String) {
         guard let chat = chats[id] else { return }
         // Keep the sidebar tab in step (search results and notifications can
-        // open a chat from the other tab).
-        sidebarTab = chat.isPullRequest ? .prs : .issues
+        // open a chat from another tab) — but stay put if the current tab
+        // already shows this chat, so arrowing through "Me" doesn't bounce.
+        if !tabMatches(chat, tab: sidebarTab) {
+            sidebarTab = chat.isPullRequest ? .prs : .issues
+        }
         if transcripts[id] == nil, let cached = store.loadTranscript(chat) {
             transcripts[id] = cached
         }
@@ -987,6 +990,21 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Assign the signed-in user to an (unassigned) issue.
+    func assignSelf(chatID: String) {
+        guard let api, let myLogin = me?.login, let chat = chats[chatID] else { return }
+        Task {
+            do {
+                let issue = try await api.addAssignees(chat.repoFullName, chat.number, logins: [myLogin])
+                self.chats[chatID]?.assignees = (issue.assignees ?? []).map { $0.ref }
+                self.store.saveChats(self.chats)
+                gclog("assigned self to \(chatID)")
+            } catch {
+                self.lastErrorText = "Couldn't assign you to this issue: \(error.localizedDescription)"
+            }
+        }
+    }
+
     /// Flip a PR chat between the summary view (default) and the raw conversation.
     func togglePRView(chatID: String) {
         if showRawPR.contains(chatID) {
@@ -1012,15 +1030,29 @@ final class AppState: ObservableObject {
         onUnreadChanged?(unreadChatCount)
     }
 
+    /// Which sidebar tab a chat belongs to. "Me" = issues assigned to me plus
+    /// PRs I authored (those also stay in their home tabs).
+    func tabMatches(_ chat: Chat, tab: SidebarTab) -> Bool {
+        switch tab {
+        case .issues:
+            return !chat.isPullRequest
+        case .prs:
+            return chat.isPullRequest
+        case .mine:
+            guard let my = me?.login else { return false }
+            return chat.isPullRequest
+                ? chat.author.login == my
+                : chat.assignees.contains { $0.login == my }
+        }
+    }
+
     func pinnedChats() -> [Chat] {
-        let wantPR = sidebarTab == .prs
-        return chats.values
-            .filter { $0.pinned && !$0.ignored && $0.isPullRequest == wantPR }
+        chats.values
+            .filter { $0.pinned && !$0.ignored && tabMatches($0, tab: sidebarTab) }
             .sorted { $0.lastMessageAt > $1.lastMessageAt }
     }
 
     func rows() -> [ChatRowModel] {
-        let wantPR = sidebarTab == .prs
         var list: [Chat]
         switch filter {
         case .all:
@@ -1035,15 +1067,14 @@ final class AppState: ObservableObject {
             list = chats.values.filter { $0.ignored }
         }
         return list
-            .filter { $0.isPullRequest == wantPR }
+            .filter { tabMatches($0, tab: sidebarTab) }
             .sorted { $0.lastMessageAt > $1.lastMessageAt }
             .map { ChatRowModel(chat: $0) }
     }
 
     func unreadCount(for tab: SidebarTab) -> Int {
-        let wantPR = tab == .prs
-        return chats.values.filter {
-            !$0.ignored && $0.unreadCount > 0 && $0.isPullRequest == wantPR
+        chats.values.filter {
+            !$0.ignored && $0.unreadCount > 0 && tabMatches($0, tab: tab)
         }.count
     }
 

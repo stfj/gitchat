@@ -315,6 +315,12 @@ final class GitHubAPI {
         try await paged("repos/\(repo)/labels", maxPages: 1)
     }
 
+    func addAssignees(_ repo: String, _ number: Int, logins: [String]) async throws -> GHIssue {
+        let raw = try await send("POST", "repos/\(repo)/issues/\(number)/assignees",
+                                 body: ["assignees": logins])
+        return try Self.decoder.decode(GHIssue.self, from: raw.data)
+    }
+
     func pullFiles(_ repo: String, _ number: Int) async throws -> [GHPullFile] {
         try await paged("repos/\(repo)/pulls/\(number)/files", maxPages: 3)
     }

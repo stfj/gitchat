@@ -114,6 +114,7 @@ struct MessageHit: Identifiable {
 enum SidebarTab: String, CaseIterable, Identifiable {
     case issues = "Issues"
     case prs = "Pull Requests"
+    case mine = "Me"
     var id: String { rawValue }
 }
 

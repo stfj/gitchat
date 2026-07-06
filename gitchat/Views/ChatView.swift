@@ -107,6 +107,13 @@ struct ChatView: View {
                     Image(systemName: showSummary ? "text.bubble" : "wand.and.stars")
                 }
                 .help(showSummary ? "Show the full conversation" : "Show plain-English summary")
+            } else if chat.assignees.isEmpty {
+                Button {
+                    app.assignSelf(chatID: chatID)
+                } label: {
+                    Image(systemName: "person.badge.plus")
+                }
+                .help("Assign this issue to me")
             }
 
             Button {

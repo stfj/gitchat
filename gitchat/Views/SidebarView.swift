@@ -67,7 +67,11 @@ struct SidebarView: View {
 
     private func tabLabel(_ tab: SidebarTab) -> String {
         let unread = app.unreadCount(for: tab)
-        let name = tab == .prs ? "PRs" : tab.rawValue
+        let name: String = switch tab {
+        case .issues: "Issues"
+        case .prs: "PRs"
+        case .mine: "Me"
+        }
         return unread > 0 ? "\(name) • \(unread)" : name
     }
 
