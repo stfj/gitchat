@@ -482,13 +482,51 @@ struct PRSummaryView: View {
                     }
                 }
 
-                Text("AI summary — press the 💬 button in the toolbar for the full conversation.")
+                let comments = humanComments
+                if !comments.isEmpty {
+                    Divider().padding(.top, 4)
+                    HStack(spacing: 6) {
+                        Image(systemName: "bubble.left.and.bubble.right")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.secondary)
+                        Text("Conversation")
+                            .font(.system(size: 12.5, weight: .semibold))
+                        Text("\(comments.count)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(comments.enumerated()), id: \.element.id) { i, message in
+                            MessageBubbleRow(
+                                chatID: chatID,
+                                message: message,
+                                showHeader: i == 0 || comments[i - 1].author.login != message.author.login,
+                                isMine: message.author.login == app.me?.login,
+                                isHighlighted: false,
+                                isEditing: app.editingMessage == AppState.EditingTarget(chatID: chatID, messageID: message.id)
+                            )
+                            .equatable()
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                Text("AI summary + human comments — press the 💬 toolbar button for the full conversation, bots included.")
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
             }
             .padding(16)
             .frame(maxWidth: 640, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// Conversation minus the PR description (already summarized) and minus
+    /// bot chatter (GitHub App accounts all carry the "[bot]" suffix).
+    private var humanComments: [Message] {
+        (app.transcripts[chatID] ?? []).filter {
+            $0.id != "body" && !$0.author.login.hasSuffix("[bot]")
         }
     }
 }

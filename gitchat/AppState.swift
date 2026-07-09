@@ -1126,6 +1126,11 @@ final class AppState: ObservableObject {
 
     /// Open a message search hit: select its chat, scroll to the message, flash it.
     func open(hit: MessageHit) {
+        // A jump needs the full transcript on screen — PR chats default to the
+        // summary view, where the target message may be filtered out.
+        if chats[hit.chatID]?.isPullRequest == true {
+            showRawPR.insert(hit.chatID)
+        }
         jumpTarget = MessageJump(chatID: hit.chatID, messageID: hit.messageID)
         highlightedMessageID = hit.messageID
         selectedChatID = hit.chatID
