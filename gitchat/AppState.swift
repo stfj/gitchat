@@ -44,7 +44,12 @@ final class AppState: ObservableObject {
     @Published var searchText = ""
     @Published var filter: ChatFilter = .all
     @Published var sidebarTab: SidebarTab = .issues
-    @Published var settings = AppSettings() { didSet { store.saveSettings(settings) } }
+    @Published var settings = AppSettings() {
+        didSet {
+            store.saveSettings(settings)
+            if oldValue.hotkey != settings.hotkey { onHotkeyChanged?(settings.hotkey) }
+        }
+    }
     @Published var syncStatusText = ""
     @Published var lastErrorText: String?
     @Published var composeVisible = false
@@ -83,6 +88,7 @@ final class AppState: ObservableObject {
 
     var onUnreadChanged: ((Int) -> Void)?
     var onShowWindow: (() -> Void)?
+    var onHotkeyChanged: ((HotkeyConfig?) -> Void)?
 
     let store = Store()
     private(set) var api: GitHubAPI?
@@ -167,6 +173,61 @@ final class AppState: ObservableObject {
                 }
             }
         }
+        // Image-cache stress: offer ~1GB of real bitmaps to the cache and
+        // verify the byte budget holds (the multi-week-uptime slowdown was
+        // unbounded decoded-image accumulation).
+        if ProcessInfo.processInfo.environment["GITCHAT_DEBUG_IMGSTRESS"] != nil {
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                gclog(String(format: "imgstress start rss=%.1fMB", Self.memoryFootprintMB()))
+                for i in 1...40 {
+                    let w = 3000, h = 2000
+                    guard let ctx = CGContext(data: nil, width: w, height: h,
+                                              bitsPerComponent: 8, bytesPerRow: w * 4,
+                                              space: CGColorSpaceCreateDeviceRGB(),
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+                          let cg = { ctx.setFillColor(CGColor(red: Double(i) / 40, green: 0.4, blue: 0.6, alpha: 1))
+                                     ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+                                     return ctx.makeImage() }() else { continue }
+                    let img = NSImage(cgImage: cg, size: NSSize(width: w / 2, height: h / 2))
+                    ImageLoader.shared.prime(img, for: "stress://\(i)")
+                    if i % 10 == 0 {
+                        gclog(String(format: "imgstress %d offered (%.0fMB total) rss=%.1fMB",
+                                     i, Double(i * w * h * 4) / 1_048_576, Self.memoryFootprintMB()))
+                    }
+                }
+                try? await Task.sleep(for: .seconds(2))
+                var retained = 0
+                for i in 1...40 where await ImageLoader.shared.cached(for: "stress://\(i)") { retained += 1 }
+                gclog(String(format: "imgstress done: rss=%.1fMB, %d/40 stress images still cached",
+                             Self.memoryFootprintMB(), retained))
+            }
+        }
+        // Churn harness: repeatedly cycles the selection through many chats,
+        // logging memory — simulates weeks of chat-opening to expose leaks
+        // in the per-selection view rebuild.
+        if let churnStr = ProcessInfo.processInfo.environment["GITCHAT_DEBUG_CHURN"],
+           let laps = Int(churnStr) {
+            Task {
+                try? await Task.sleep(for: .seconds(5))
+                self.onShowWindow?()
+                try? await Task.sleep(for: .seconds(2))
+                let ids = Array(self.chats.values
+                    .sorted { $0.lastMessageAt > $1.lastMessageAt }
+                    .prefix(30).map(\.id))
+                gclog(String(format: "churn start: rss=%.1fMB (%d chats × %d laps)",
+                             Self.memoryFootprintMB(), ids.count, laps))
+                for lap in 1...laps {
+                    for id in ids {
+                        self.selectedChatID = id
+                        try? await Task.sleep(for: .milliseconds(350))
+                    }
+                    gclog(String(format: "churn lap %d: rss=%.1fMB transcripts=%d",
+                                 lap, Self.memoryFootprintMB(), self.transcripts.count))
+                }
+                gclog("churn done")
+            }
+        }
         // Focus harness: focuses the sidebar list, then walks the selection
         // like arrow keys would, logging the first responder each step —
         // focus-stealing shows up as the responder class changing.
@@ -226,13 +287,28 @@ final class AppState: ObservableObject {
 
     private func startSyncLoop() {
         syncLoopTask?.cancel()
+        // Soak-test hook: compress days of cycles into minutes.
+        let fastPoll = ProcessInfo.processInfo.environment["GITCHAT_FAST_POLL"].flatMap(Double.init)
         syncLoopTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.runCycle()
                 let seconds = await MainActor.run { self?.settings.pollSeconds ?? 60 }
-                try? await Task.sleep(for: .seconds(max(30, seconds)))
+                try? await Task.sleep(for: .seconds(fastPoll.map { max(2, $0) } ?? max(30, seconds)))
             }
         }
+    }
+
+    /// Resident memory (phys_footprint — what Activity Monitor shows).
+    nonisolated static func memoryFootprintMB() -> Double {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return -1 }
+        return Double(info.phys_footprint) / 1_048_576
     }
 
     func syncNow() {
@@ -358,7 +434,12 @@ final class AppState: ObservableObject {
                 lastErrorText = "GitHub rejected the token. Sign in again from Settings."
             }
         }
-        gclog("cycle done: \(chats.count) chats, \(notifications.count) notification(s), rate \(api.rateRemaining)")
+        let cycleMS = Date().timeIntervalSince(cycleStart) * 1000
+        gclog(String(format: "cycle done: %d chats, %d notification(s), rate %d | %.0fms rss=%.1fMB transcripts=%d translations=%d index=%d",
+                     chats.count, notifications.count, api.rateRemaining, cycleMS,
+                     Self.memoryFootprintMB(),
+                     transcripts.count, translations.count,
+                     store.messageIndex.values.reduce(0) { $0 + $1.count }))
     }
 
     /// Merge one issue payload into the chat list. Returns a notification to post, if any.
@@ -521,6 +602,25 @@ final class AppState: ObservableObject {
         Notifier.shared.clearDelivered(for: id)
         if chat.isPullRequest {
             ensureTranslated(chatID: id)
+        }
+        trimTranscripts(keeping: id)
+    }
+
+    /// The transcripts dict otherwise grows with every chat ever opened —
+    /// weeks of uptime pinned hundreds of message arrays. Disk keeps the full
+    /// copy; reopening reloads instantly.
+    private var transcriptLRU: [String] = []
+    private func trimTranscripts(keeping id: String) {
+        transcriptLRU.removeAll { $0 == id }
+        transcriptLRU.append(id)
+        guard transcripts.count > 12 else { return }
+        for old in transcriptLRU.dropLast(12) where old != selectedChatID {
+            // Never evict anything holding a message that only exists locally.
+            let hasLocal = transcripts[old]?.contains { $0.pending || $0.failed } ?? false
+            if !hasLocal {
+                transcripts[old] = nil
+                transcriptLRU.removeAll { $0 == old }
+            }
         }
     }
 

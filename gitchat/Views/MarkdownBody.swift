@@ -43,8 +43,14 @@ final class ParseBox<T> {
 enum MarkdownParser {
     // Transcripts re-render on every published change; parsing is cached so
     // typing in the composer doesn't re-parse every visible message.
-    @MainActor private static let blockCache = NSCache<NSString, ParseBox<[MarkdownBlock]>>()
-    @MainActor private static let inlineCache = NSCache<NSString, ParseBox<AttributedString>>()
+    // Bounded: content-keyed caches recompute safely on a miss, and unbounded
+    // entries were part of the multi-week-uptime memory creep.
+    @MainActor private static let blockCache: NSCache<NSString, ParseBox<[MarkdownBlock]>> = {
+        let c = NSCache<NSString, ParseBox<[MarkdownBlock]>>(); c.countLimit = 600; return c
+    }()
+    @MainActor private static let inlineCache: NSCache<NSString, ParseBox<AttributedString>> = {
+        let c = NSCache<NSString, ParseBox<AttributedString>>(); c.countLimit = 2000; return c
+    }()
 
     @MainActor static func parse(_ text: String) -> [MarkdownBlock] {
         if let hit = blockCache.object(forKey: text as NSString) { return hit.value }
@@ -170,7 +176,9 @@ enum MarkdownParser {
 
     // MARK: NSAttributedString variants (for the selectable NSTextView path)
 
-    @MainActor private static let nsInlineCache = NSCache<NSString, NSAttributedString>()
+    @MainActor private static let nsInlineCache: NSCache<NSString, NSAttributedString> = {
+        let c = NSCache<NSString, NSAttributedString>(); c.countLimit = 2000; return c
+    }()
 
     /// AttributedString presentation intents don't render outside SwiftUI's
     /// Text, so resolve them into concrete AppKit attributes.
@@ -322,7 +330,9 @@ struct SelectableMessageText: NSViewRepresentable {
         view.actions = actions
     }
 
-    @MainActor private static let sizeCache = NSCache<NSString, ParseBox<CGSize>>()
+    @MainActor private static let sizeCache: NSCache<NSString, ParseBox<CGSize>> = {
+        let c = NSCache<NSString, ParseBox<CGSize>>(); c.countLimit = 6000; return c
+    }()
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView view: MessageTextNSView, context: Context) -> CGSize? {
         var width = proposal.width ?? 456

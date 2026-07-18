@@ -143,6 +143,7 @@ struct AppSettings: Codable {
     var assetsRepoName: String = "gitchat-assets"
     var apiBase: String = "https://api.github.com"
     var notificationsEnabled: Bool = true
+    var hotkey: HotkeyConfig? = nil   // global show/hide shortcut
 
     init() {}
     init(from decoder: Decoder) throws {
@@ -155,6 +156,7 @@ struct AppSettings: Codable {
         assetsRepoName = try c.decodeIfPresent(String.self, forKey: .assetsRepoName) ?? "gitchat-assets"
         apiBase = try c.decodeIfPresent(String.self, forKey: .apiBase) ?? "https://api.github.com"
         notificationsEnabled = try c.decodeIfPresent(Bool.self, forKey: .notificationsEnabled) ?? true
+        hotkey = try c.decodeIfPresent(HotkeyConfig.self, forKey: .hotkey)
     }
 }
 

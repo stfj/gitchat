@@ -18,6 +18,18 @@ final class ImageLoader {
         cfg.timeoutIntervalForRequest = 30
         session = URLSession(configuration: cfg)
         cache.countLimit = 500
+        // Byte budget matters more than entry count: full-res lightbox decodes
+        // run tens of MB each, and NSCache without costs let two weeks of
+        // browsing pin gigabytes of bitmaps (the long-uptime slowdown).
+        cache.totalCostLimit = 192 << 20
+    }
+
+    private nonisolated static func cost(of image: NSImage) -> Int {
+        if let rep = image.representations.first as? NSBitmapImageRep {
+            return rep.pixelsWide * rep.pixelsHigh * 4
+        }
+        // Our decodes report points at half pixel size → ×4 area ×4 bytes.
+        return Int(image.size.width * image.size.height * 16)
     }
 
     /// maxPixel: decode target for the largest dimension (screenshots are often
@@ -46,7 +58,7 @@ final class ImageLoader {
         inflight[cacheKey] = task
         let img = await task.value
         inflight[cacheKey] = nil
-        if let img { cache.setObject(img, forKey: cacheKey as NSString) }
+        if let img { cache.setObject(img, forKey: cacheKey as NSString, cost: Self.cost(of: img)) }
         return img
     }
 
@@ -64,10 +76,16 @@ final class ImageLoader {
         return NSImage(cgImage: cg, size: NSSize(width: CGFloat(cg.width) / 2, height: CGFloat(cg.height) / 2))
     }
 
+    /// Test probe: is a thumb entry currently resident?
+    func cached(for urlString: String) -> Bool {
+        cache.object(forKey: ("thumb|" + urlString) as NSString) != nil
+    }
+
     /// Seed the cache (e.g. show the just-uploaded local image under its final URL).
     func prime(_ image: NSImage, for urlString: String) {
-        cache.setObject(image, forKey: ("thumb|" + urlString) as NSString)
-        cache.setObject(image, forKey: ("full|" + urlString) as NSString)
+        let cost = Self.cost(of: image)
+        cache.setObject(image, forKey: ("thumb|" + urlString) as NSString, cost: cost)
+        cache.setObject(image, forKey: ("full|" + urlString) as NSString, cost: cost)
     }
 }
 

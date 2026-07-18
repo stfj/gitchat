@@ -86,6 +86,12 @@ struct SettingsView: View {
             }
 
             Section("App") {
+                LabeledContent("Show/hide shortcut") {
+                    HotkeyRecorder(hotkey: $app.settings.hotkey)
+                }
+                Text("Works from any app: press it to bring up gitchat, press again to tuck it away.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
                 Toggle("Launch at login", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, enable in
                         do {

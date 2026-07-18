@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusMenu: NSMenu!
     private var mainWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private var debugHotkeySignal: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -15,6 +16,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         buildStatusItem()
         wireCallbacks()
         appState.bootstrap()
+        applyHotkey(appState.settings.hotkey)
+        // Debug: `kill -USR1 $(pgrep -x gitchat)` simulates a hotkey press
+        // (synthetic key events need TCC grants automated tests don't have).
+        if ProcessInfo.processInfo.environment["GITCHAT_DEBUG_HOTKEY"] != nil {
+            signal(SIGUSR1, SIG_IGN)
+            let src = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+            src.setEventHandler { HotkeyManager.shared.onPress?() }
+            src.resume()
+            debugHotkeySignal = src
+        }
         // First run: nothing to sign in with yet, so bring up the window.
         if CredentialsVault.load() == nil || ProcessInfo.processInfo.environment["GITCHAT_DEBUG_GEO"] != nil {
             showMainWindow()
@@ -106,6 +117,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    // MARK: - Global hotkey
+
+    private func applyHotkey(_ config: HotkeyConfig?) {
+        if HotkeyManager.shared.register(config) {
+            gclog("hotkey: registered \(config?.display ?? "none")")
+        } else if let config {
+            gclog("hotkey: registration FAILED for \(config.display)")
+            appState.lastErrorText = "Couldn't grab \(config.display) globally — another app may already use it."
+        }
+    }
+
+    private func hotkeyPressed() {
+        if let w = mainWindow, w.isVisible, w.isKeyWindow {
+            gclog("hotkey: hide")
+            w.orderOut(nil)
+            NSApp.hide(nil)   // hand focus back to the app that had it
+        } else {
+            gclog("hotkey: show")
+            showMainWindow()
+        }
+    }
+
     @objc func openSettingsAction() {
         if settingsWindow == nil {
             let host = NSHostingController(rootView: SettingsView().environmentObject(appState))
@@ -147,6 +180,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func wireCallbacks() {
         appState.onUnreadChanged = { [weak self] count in
             self?.updateBadge(count)
+        }
+        appState.onHotkeyChanged = { [weak self] config in
+            self?.applyHotkey(config)
+        }
+        HotkeyManager.shared.onPress = { [weak self] in
+            self?.hotkeyPressed()
         }
         appState.onShowWindow = { [weak self] in
             self?.showMainWindow()
